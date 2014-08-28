@@ -10,7 +10,7 @@ import (
        "encoding/json"
        "archive/zip"
        "bytes"
-       "time"
+       //"time"
        "path/filepath"
        "github.com/codegangsta/cli"
        "github.com/andelf/go-curl"
@@ -241,13 +241,16 @@ func downloadFile(scratchdir string, pid string) {
 }
 
 func sendJob( aetitle string, dir string ) {
-  fmt.Printf("send a directory \"%s\" for processing to \"%s\"\n", dir, aetitle)
+  machine, port := getDefaultMagickBox()
+
+  fmt.Printf("send directory \"%s\" for \"%s\" processing to %s:%s\n", dir, aetitle, machine, port)
 
   // walk through all the files in the directory
   buf := new(bytes.Buffer)
 
   w:= zip.NewWriter(buf)
 
+  count := 0
   err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
      // we should check if we have a DICOM file... (or not)
      if err != nil {
@@ -257,7 +260,8 @@ func sendJob( aetitle string, dir string ) {
      if info.IsDir() {
       return err
      }
-     fmt.Printf("add file %v\r", path)
+     fmt.Printf("add file %v [%v]\r", path, count)
+     count = count + 1
      // we could check if file is DICOM first... (seek 128bytes and see if we find "DICM")
 
      f, err := w.Create(path)
@@ -293,16 +297,18 @@ func sendJob( aetitle string, dir string ) {
     fmt.Println("Error: could not get current working directory")
   }
   fp, _ := ioutil.TempFile(workingdirectory, "mbsend_zip")
-  fmt.Println("store directory temporarily in ", fp.Name())
+  fmt.Println("store data for send in", fp.Name())
   zipFilename := fp.Name()
-  n, err := buf.WriteTo(fp)
-  fmt.Printf("wrote bytes to zip file %v\n", n)
+  _, err = buf.WriteTo(fp)
+  //fmt.Printf("wrote bytes to zip file %v\n", n)
   if err != nil {
     fmt.Printf("error: ", err)
   }
   fp.Close()
 
-  machine, port := getDefaultMagickBox()
+  // 
+  // Now send the new zip-file to the processing machine
+  //
 
   // send zip file for processing
   easy := curl.EasyInit()
@@ -318,7 +324,7 @@ func sendJob( aetitle string, dir string ) {
   easy.Setopt(curl.OPT_URL, url)
   easy.Setopt(curl.OPT_PORT, portNumber)
   easy.Setopt(curl.OPT_POST, true)
-  easy.Setopt(curl.OPT_VERBOSE, true)
+  //easy.Setopt(curl.OPT_VERBOSE, true)
 
   easy.Setopt(curl.OPT_HTTPHEADER, []string{"Expect:"})
 
@@ -327,7 +333,7 @@ func sendJob( aetitle string, dir string ) {
 
   form := curl.NewForm()
   form.Add("aetitle", aetitle)
-  form.Add("description", "Send by MB")
+  form.Add("description", "Send by MagickBox")
   form.Add("filename", filepath.Base(zipFilename))
   // form.AddFile("theFile", "./readme.txt")
   if _, err := os.Stat(zipFilename); os.IsNotExist(err) {
@@ -335,13 +341,12 @@ func sendJob( aetitle string, dir string ) {
     return
   }
   form.AddFile("theFile", zipFilename)
-  fmt.Println("send the file:", zipFilename)
 
   easy.Setopt(curl.OPT_HTTPPOST, form)
 
   easy.Setopt(curl.OPT_NOPROGRESS, false)
   easy.Setopt(curl.OPT_PROGRESSFUNCTION, func(dltotal, dlnow, ultotal, ulnow float64, _ interface{}) bool {
-    fmt.Printf("Download %3.2fmb, Uploading %3.2f\r", dlnow/1024/1024, ulnow/1024/1024)
+    fmt.Printf("Uploading %3.2fmb\r", ulnow/1024/1024)
     return true
   })
 
@@ -349,8 +354,8 @@ func sendJob( aetitle string, dir string ) {
   if err := easy.Perform(); err != nil {
     println("ERROR: ", err.Error())
   }
-
-  time.Sleep(1000000000) // wait gorotine
+  println("")  // a last newline
+  //time.Sleep(1000000000) // wait gorotine
 }
 
 func getDefaultMagickBox() (machine string, port string) {
