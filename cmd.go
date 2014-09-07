@@ -5,43 +5,41 @@ package main
 
 import (
        "os"
+       "io"
        "io/ioutil"
        "fmt"
        "os/user"
-       "strconv"
        "regexp"
        "encoding/json"
        "archive/zip"
        "bytes"
-       //"time"
+       "net/http"
        "path/filepath"
+       "mime/multipart"
+       "log"
        "github.com/codegangsta/cli"
-       "github.com/andelf/go-curl"
 )
 
-// get json list of magick box machines known to the mmil.ucsd.edu server
+const (
+        GET_VIEW int = iota  
+        GET_DOWNLOAD int = iota
+        GET_LOG int = iota
+)
+
 func getMagickBoxes() {
-  easy := curl.EasyInit()
-  defer easy.Cleanup()
+  resp, err := http.Get("http://mmil.ucsd.edu/MagickBox/queryMachines.php")
+  if err != nil {
+    println("Error: could not query mmil.ucsd.edu")
+  }
+  defer resp.Body.Close()
+  body, err := ioutil.ReadAll(resp.Body)
 
-  easy.Setopt(curl.OPT_URL, "http://mmil.ucsd.edu/MagickBox/queryMachines.php")
-  easy.Setopt(curl.OPT_PORT, 80)
-
-  // make a callback function
-  getTest := func( buf []byte, userdata interface{}) bool {
-    //println("DEBUG: size=>", len(buf))
-    //println("DEBUG: content=>", string(buf))
-
-    var f interface{}
-    json.Unmarshal(buf, &f)
-    m := f.([]interface{})
-    /* if (len(m) > 1) {
-      println("found", len(m), "machines")
-    } else {
-      println("found", len(m), "machine")
-    } */
-    fmt.Printf("[")
-    for k2, v2 := range m {
+  // now parse the body
+  var f interface{}
+  json.Unmarshal(body, &f)
+  m := f.([]interface{})
+  fmt.Printf("[")
+  for k2, v2 := range m {
         bb := v2.(map[string]interface{})
         machine := ""
         port := ""
@@ -69,70 +67,26 @@ func getMagickBoxes() {
         if k2 < len(m)-1 {
             fmt.Printf(",")
         }
-    }
-    fmt.Printf("]\n")
-
-    return true
   }
-
-  easy.Setopt(curl.OPT_WRITEFUNCTION, getTest)
-
-  if err := easy.Perform(); err != nil {
-    fmt.Printf("ERROR: %v\n", err)
-  }
+  fmt.Printf("]\n")
 }
 
-// print out json of job list from server (argument limits the list by regexp on values for each job)
-func getListOfJobs( reg string, download bool ) {
-  easy := curl.EasyInit()
-  defer easy.Cleanup()
+func getListOfJobs( reg string, ttype int) {
 
-  machine, port := getDefaultMagickBox()
-  var url string
-  var portNumber int
-  portNumber, err := strconv.Atoi(port)
+  machine, port, _ := getDefaultMagickBox()
+  url := fmt.Sprintf("http://%v:%v/code/php/getScratch.php", machine, port)
+
+  resp, err := http.Get(url)
   if err != nil {
-    fmt.Printf("Error: could not convert port number to int %v", err);
+    log.Fatal("Error: could not get list of jobs")
   }
-  url = fmt.Sprintf("http://%v/code/php/getScratch.php", machine)
-  //fmt.Printf("url is : %v ", url)
-  easy.Setopt(curl.OPT_URL, url)
-  easy.Setopt(curl.OPT_PORT, portNumber)
+  defer resp.Body.Close()
+  body, err := ioutil.ReadAll(resp.Body)
 
-  // make a callback function
-  easy.Setopt(curl.OPT_WRITEFUNCTION, func( buf []byte, userdata interface{} ) bool {
-    file := userdata.(*os.File)
-    if _, err := file.Write(buf); err != nil {
-      return false
-    }
-    return true
-  })
-  fp, _ := ioutil.TempFile("", "mbretrieve") // os.OpenFile(filename, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0777)
-  //fmt.Println("write temp file to ", fp.Name())
-  filename := fp.Name()
-  // defer fp.Close() // defer close
-
-  easy.Setopt(curl.OPT_WRITEDATA, fp)
-
-  if err := easy.Perform(); err != nil {
-    fmt.Printf("ERROR: %v\n", err)
-  }
-
-  // function should be called after all the entries have been written to disk
-  defer func(filename string, fp *os.File, reg string) {
-    // read the file in again and parse it
-    fp.Close()
-    data, err := ioutil.ReadFile(filename)
-    if err != nil {
-      fmt.Println("Error: could not read temporary file again ", filename)
-      return
-    }
-    parseGet(data, reg, download)
-  }(filename, fp, reg)
-
+  parseGet(body, reg, ttype)
 }
 
-func parseGet(buf []byte, reg string, download bool) {
+func parseGet(buf []byte, reg string, ttype int) {
     var search = regexp.MustCompile(reg)
     var scratchDirReg = regexp.MustCompile("scratchdir")
     var pidReg = regexp.MustCompile("pid")
@@ -146,7 +100,7 @@ func parseGet(buf []byte, reg string, download bool) {
     //fil = userdata.(string)
     //fmt.Printf("info: search for %v\n", fil)
 
-    if download == false {
+    if ttype == GET_VIEW || ttype == GET_LOG {
       fmt.Printf("[")
     }
 
@@ -165,6 +119,23 @@ func parseGet(buf []byte, reg string, download bool) {
               //fmt.Println(search.MatchString(vv))
               if scratchDirReg.MatchString(k) {
                 scratchdir = vv
+
+                if ttype == GET_LOG {
+                   machine, port, _ := getDefaultMagickBox()
+                   url := fmt.Sprintf("http://%v:%v/scratch/%v/processing.log", machine, port, scratchdir)
+
+                   resp, err := http.Get(url)
+                   if err != nil {
+                      println("Error: could not get log for ", scratchdir)
+                   }
+                   defer resp.Body.Close()
+                   body, err := ioutil.ReadAll(resp.Body)
+                   bb["log"] = string(body)
+                  
+                   if search.MatchString(string(body)) {
+                      foundOne = true
+                   }
+                }
               }
               if pidReg.MatchString(k) {
                 pid = vv
@@ -178,9 +149,9 @@ func parseGet(buf []byte, reg string, download bool) {
           }
         }
         if foundOne {
-          if download {
+          if ttype == GET_DOWNLOAD {
             downloadFile(scratchdir, pid)
-          } else {
+          } else { // GET_VIEW and GET_LOG
             if count > 0 {
               fmt.Printf(",")
             }
@@ -193,58 +164,74 @@ func parseGet(buf []byte, reg string, download bool) {
           }
         }
     }
-    if download == false {
+    if ttype == GET_VIEW || ttype == GET_LOG {
       fmt.Printf("]\n")
     }
 }
 
 func downloadFile(scratchdir string, pid string) {
-  easy := curl.EasyInit()
-  defer easy.Cleanup()
 
-  machine, port := getDefaultMagickBox()
-  //fmt.Printf("using: %v on %v\n", machine, port)
-  var url string
-  var portNumber int
-  portNumber, err := strconv.Atoi(port)
+  machine, port, _ := getDefaultMagickBox()
+  url := fmt.Sprintf("http://%v:%v/code/php/getOutputZip.php?folder=%s", machine, port, scratchdir)
+  res, err := http.Get(url)
   if err != nil {
-    fmt.Printf("Error: could not convert port number to int %v", err);
+    log.Fatal(err)
   }
-  url = fmt.Sprintf("http://%v/code/php/getOutputZip.php?folder=%s", machine, scratchdir)
+  defer res.Body.Close()
 
-  easy.Setopt(curl.OPT_URL, url)
-  easy.Setopt(curl.OPT_PORT, portNumber)
-
-  // make a callback function
-  easy.Setopt(curl.OPT_WRITEFUNCTION, func( buf []byte, userdata interface{} ) bool {
-
-    file := userdata.(*os.File)
-    if _, err := file.Write(buf); err != nil {
-      return false
-    }
-    return true
-  })
-
-  // create a temporary file
   filename := fmt.Sprintf("%s_%s.zip", pid, scratchdir)
   fp, _ := os.OpenFile(filename, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0777)
   fmt.Println("writing", fp.Name())
   defer fp.Close() // defer close
 
-  easy.Setopt(curl.OPT_WRITEDATA, fp)
-  easy.Setopt(curl.OPT_NOPROGRESS, false)
-  easy.Setopt(curl.OPT_PROGRESSFUNCTION, func(dltotal, dlnow, ultotal, ulnow float64, _ interface{}) bool {
-    fmt.Printf("Download %3.2fmb, Uploading %3.2f\r", dlnow/1024/1024, ulnow/1024/1024)
-    return true
-  })
 
-  if err := easy.Perform(); err != nil {
-    fmt.Printf("ERROR: %v\n", err)
+  buf := make([]byte, 131072)
+  var all []byte
+  for {
+    n, _ := res.Body.Read(buf)
+    if n == 0 {
+      break
+    }
+    all = append(all, buf[:n]...)
+    fmt.Printf("receiving %3.2fmb\r", float64(len(all))/1024.0/1024.0)
   }
+  _, err = fp.Write(all[:len(all)])
+  if err != nil {
+    log.Println(err)
+  }
+
+}
+
+func newfileUploadRequest(uri string, params map[string]string, paramName, path string) (*http.Request, error) {
+  file, err := os.Open(path)
+  if err != nil {
+      return nil, err
+  }
+  defer file.Close()
+
+  body := &bytes.Buffer{}
+  writer := multipart.NewWriter(body)
+  part, err := writer.CreateFormFile(paramName, filepath.Base(path))
+  if err != nil {
+      return nil, err
+  }
+  _, err = io.Copy(part, file)
+
+  for key, val := range params {
+      _ = writer.WriteField(key, val)
+  }
+  err = writer.Close()
+  if err != nil {
+      return nil, err
+  }
+
+  request, err := http.NewRequest("POST", uri, body)
+  request.Header.Add("Content-Type", writer.FormDataContentType())
+  return request, err
 }
 
 func sendJob( aetitle string, dir string ) {
-  machine, port := getDefaultMagickBox()
+  machine, port, sender := getDefaultMagickBox()
 
   fmt.Printf("send directory \"%s\" for \"%s\" processing to %s:%s\n", dir, aetitle, machine, port)
 
@@ -263,13 +250,14 @@ func sendJob( aetitle string, dir string ) {
      if info.IsDir() {
       return err
      }
-     fmt.Printf("add file %v [%v]\r", path, count)
      count = count + 1
+     fmt.Printf("add file %v [%v]\r", path, count)
      // we could check if file is DICOM first... (seek 128bytes and see if we find "DICM")
-
-     f, err := w.Create(path)
+     
+     fname := fmt.Sprintf("file%05d_%v", count, filepath.Base(path))
+     f, err := w.Create(fname)
      if err != nil {
-      fmt.Printf("Error: could not create path in zip", err)
+      fmt.Printf("Error: could not create file in zip", err)
      }
      data, readerr := ioutil.ReadFile(path)
      if readerr != nil {
@@ -295,12 +283,10 @@ func sendJob( aetitle string, dir string ) {
   fmt.Println("")
 
   // write buffer to file
-  workingdirectory, err := os.Getwd()
-  if err != nil {
-    fmt.Println("Error: could not get current working directory")
-  }
+  workingdirectory := os.TempDir()
+
   fp, _ := ioutil.TempFile(workingdirectory, "mbsend_zip")
-  fmt.Println("store data for send in", fp.Name())
+  //fmt.Println("store data for send in", fp.Name())
   zipFilename := fp.Name()
   _, err = buf.WriteTo(fp)
   //fmt.Printf("wrote bytes to zip file %v\n", n)
@@ -308,12 +294,98 @@ func sendJob( aetitle string, dir string ) {
     fmt.Printf("error: ", err)
   }
   fp.Close()
+  defer os.Remove(zipFilename)
 
   // 
   // Now send the new zip-file to the processing machine
   //
+  extraParams := map[string]string{
+      "aetitle": aetitle,
+      "description": "Send by MagickBox",
+      "filename": filepath.Base(zipFilename),
+      "sender": sender,
+  }
+  url := fmt.Sprintf("http://%v:%v/code/php/processZip.php", machine, port)
+  fmt.Println("Start sending compressed data...")
+  request, err := newfileUploadRequest(url, extraParams, "theFile", zipFilename)
+  if err != nil {
+      log.Fatal(err)
+  }
+  client := &http.Client{}
+  resp, err := client.Do(request)
+  if err != nil {
+      log.Fatal(err)
+  } else {
+/*      body := &bytes.Buffer{}
+      _, err = body.ReadFrom(resp.Body)
+      if err != nil {
+          log.Fatal(err)
+      }
+      resp.Body.Close()
+      if resp.StatusCode != 200 {
+        fmt.Println(resp.StatusCode)
+        fmt.Println(resp.Header)
+        fmt.Println(body)
+      }*/
 
-  // send zip file for processing
+
+  buf := make([]byte, 1024)
+  var all []byte
+  for {
+    n, err := resp.Body.Read(buf)
+    if n == 0 {
+      break
+    }
+    if err != nil {
+      log.Fatal(err)
+    }
+    all = append(all, buf[:n]...)
+    fmt.Printf("writing %3.2fmb\r", float64(len(all))/1024.0/1024.0)
+  }
+  fp.Write(all)
+  resp.Body.Close()
+
+
+
+ /*   mr, err := request.MultipartReader()
+    if err != nil {
+        return
+    }
+    length := request.ContentLength
+    for {
+
+        part, err := mr.NextPart()
+        if err == io.EOF {
+            break
+        }
+        var read int64
+        var p float32
+        dst, err := os.OpenFile("dstfile", os.O_WRONLY|os.O_CREATE, 0644)
+        if err != nil {
+            return
+        }
+        for {
+            buffer := make([]byte, 100000)
+            cBytes, err := part.Read(buffer)
+            if err == io.EOF {
+                break
+            }
+            read = read + int64(cBytes)
+            //fmt.Printf("read: %v \n",read )
+            p = float32(read) / float32(length) *100
+            fmt.Printf("progress: %v \n",p )
+            dst.Write(buffer[0:cBytes])
+        }
+    }
+*/
+
+
+  }
+
+
+
+
+/*  // send zip file for processing
   easy := curl.EasyInit()
   defer easy.Cleanup()
 
@@ -358,54 +430,27 @@ func sendJob( aetitle string, dir string ) {
     println("ERROR: ", err.Error())
   }
   println("")  // a last newline
-  //time.Sleep(1000000000) // wait gorotine
+  os.Remove(zipFilename)
+  //time.Sleep(1000000000) // wait gorotine 
+
+  */
 }
 
 func removeJobs( reg string ) {
-  easy := curl.EasyInit()
-  defer easy.Cleanup()
 
-  machine, port := getDefaultMagickBox()
-  var url string
-  var portNumber int
-  portNumber, err := strconv.Atoi(port)
+  machine, port, _ := getDefaultMagickBox()
+  url := fmt.Sprintf("http://%v:%v/code/php/getScratch.php", machine, port)
+
+  resp, err := http.Get(url)
   if err != nil {
-    fmt.Printf("Error: could not convert port number to int %v", err);
+    println("Error: could not get list of jobs")
   }
-  url = fmt.Sprintf("http://%v/code/php/getScratch.php", machine)
-  //fmt.Printf("url is : %v ", url)
-  easy.Setopt(curl.OPT_URL, url)
-  easy.Setopt(curl.OPT_PORT, portNumber)
+  defer resp.Body.Close()
+  body, err := ioutil.ReadAll(resp.Body)
 
-  // make a callback function
-  easy.Setopt(curl.OPT_WRITEFUNCTION, func( buf []byte, userdata interface{} ) bool {
-    file := userdata.(*os.File)
-    if _, err := file.Write(buf); err != nil {
-      return false
-    }
-    return true
-  })
-  fp, _ := ioutil.TempFile("", "mbretrieve") // os.OpenFile(filename, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0777)
-  //fmt.Println("write temp file to ", fp.Name())
-  filename := fp.Name()
-  // defer fp.Close() // defer close
-
-  easy.Setopt(curl.OPT_WRITEDATA, fp)
-
-  if err := easy.Perform(); err != nil {
-    fmt.Printf("ERROR: %v\n", err)
-  }
-
-  defer func(filename string, fp *os.File, reg string) {
-    fp.Close()
-    data, err := ioutil.ReadFile(filename)
-    if err != nil {
-      fmt.Println("Error: could not read temporary file again ", filename)
-      return
-    }
-    parseRemove(data, reg)
-  }(filename, fp, reg)
+  parseRemove(body, reg)
 }
+
 
 func parseRemove(buf []byte, reg string) {
     var search = regexp.MustCompile(reg)
@@ -467,40 +512,41 @@ func parseRemove(buf []byte, reg string) {
 }
 
 func removeFile(scratchdir string, pid string) {
-  easy := curl.EasyInit()
-  defer easy.Cleanup()
+  machine, port, _ := getDefaultMagickBox()
 
-  machine, port := getDefaultMagickBox()
-  //fmt.Printf("using: %v on %v\n", machine, port)
-  var url string
-  var portNumber int
-  portNumber, err := strconv.Atoi(port)
+  url := fmt.Sprintf("http://%v:%v/code/php/deleteStudy.php?scratchdir=%s", machine, port, scratchdir)
+
+  resp, err := http.Get(url)
   if err != nil {
-    fmt.Printf("Error: could not convert port number to int %v", err);
+    println("Error: could not reach machine ", scratchdir)
   }
-  url = fmt.Sprintf("http://%v/code/php/deleteStudy.php?scratchdir=%s", machine, scratchdir)
 
-  easy.Setopt(curl.OPT_URL, url)
-  easy.Setopt(curl.OPT_PORT, portNumber)
-
-  if err := easy.Perform(); err != nil {
-    fmt.Printf("ERROR: %v\n", err)
-  }
+  defer resp.Body.Close()
 }
 
 
-func getDefaultMagickBox() (machine string, port string) {
+func getDefaultMagickBox() (machine string, port string, sender string) {
             usr,_ := user.Current()
             dir := usr.HomeDir + "/.mb"
             type Machine struct {
               Machine string
               Port string
+              Sender string
             }
             fi, err := os.Open(dir)
-            if err != nil { panic(err) }
+            if err != nil {
+              // could be our first time, there is no .mb file, lets create a dummy file
+              //log.Println("Error: configuration incomplete, call queryMachines/selectMachine/sender first...")
+              saveDefaultMagickBox( "unknown", "unknown", "unknown" )
+              fi, err = os.Open(dir)
+              if err != nil {
+                 log.Fatal("Error: Could not create default mb file at", dir)
+              }
+              return 
+            }
             defer func() {
               if err := fi.Close(); err != nil {
-                panic(err)
+                log.Fatal(err)
               }
             }()
             buf := make([]byte, 1024)
@@ -516,17 +562,19 @@ func getDefaultMagickBox() (machine string, port string) {
             }
             machine = m.Machine
             port = m.Port
+            sender = m.Sender
             return
 }
 
-func saveDefaultMagickBox( machine string, port string ) {
+func saveDefaultMagickBox( machine string, port string, sender string ) {
             usr,_ := user.Current()
             dir := usr.HomeDir + "/.mb"
             type Machine struct {
               Machine string
               Port string
+              Sender string
             }
-            m := Machine{Machine: machine, Port: port}
+            m := Machine{Machine: machine, Port: port, Sender: sender}
             b, err := json.Marshal(m)
             // os.Stdout.Write(b)
             if err != nil { panic(err) }
@@ -542,35 +590,112 @@ func saveDefaultMagickBox( machine string, port string ) {
             if _, err := fi.Write(b[:n]); err != nil {
               panic(err)
             }
-            println("set magick box to:", m.Machine, ":", m.Port, "(saved in", dir, ")")            
+            // println("set magick box to:", m.Machine, ":", m.Port, "(saved in", dir, ")")            
 }
+
+func saveSender( sender string ) {
+  machine, port, _ := getDefaultMagickBox()
+  saveDefaultMagickBox( machine, port, sender )
+}
+
+func getSender() (sender string) {
+   _, _, sender = getDefaultMagickBox()
+   return
+}
+
 
 func main() {
      app := cli.NewApp()
      app.Name = "mb"
-     app.Usage = "MagickBox command shell for query, send, and retrieve.\n\n   Most calls return textual output in JSON format that can be processed by tools\n   such as jq (http://stedolan.github.io/jq/).\n\n   Regular expressions are used to identify individual sessions. They are applied\n   to all field values returned by the list command. If a session matches the\n   command will be applied to it."
-     app.Version = "0.0.1"
+     app.Usage = "MagickBox command shell for query, send, retrieve, and delete of data.\n\n" +
+                 "   Start by listing known MagickBox instances (queryMachines). Identify your machine\n" +
+                 "   and use selectMachine to specify it for all future commands. Also add your own\n" +
+                 "   identity using the sender command. These steps need to be done only once.\n\n" +
+                 "   Most calls return textual output in JSON format that can be processed by tools\n" +
+                 "   such as jq (http://stedolan.github.io/jq/).\n\n" +
+                 "   Regular expressions are used to identify individual sessions. They are applied\n" +
+                 "   to all field values returned by the list command. If a session matches, the\n" +
+                 "   command will be applied to it (list, push, pull, remove)."
+     app.Version = "0.0.2"
      app.Author = "Hauke Bartsch"
      app.Email = "HaukeBartsch@gmail.com"
+     app.Flags = []cli.Flag {
+      cli.StringFlag {
+        Name: "config-sender",
+        Value: "",
+        Usage: "Identify yourself, value is used as AETitleCaller [--config-sender <string>]",
+      },
+      cli.StringFlag {
+        Name: "config-machine",
+        Value: "",
+        Usage: "Identify the IP address of the MagickBox you want to work with [--config-machine <string>]",
+      },
+      cli.StringFlag {
+        Name: "config-port",
+        Value: "",
+        Usage: "Identify the port number used by your MagickBox [--config-port <string>]",
+      },
+     }
+
+     // remember the default action (needs to be called if all the configurations fail to print help)
+     defaultAction := app.Action
+     app.Action = func(c *cli.Context) {
+       if len(c.String("config-sender")) > 0  {
+          if len(c.Args()) == 1 {
+             saveSender( c.Args()[0] )
+          } else {
+             sender := getSender()
+             fmt.Printf("{\"sender\": \"%s\"}\n", sender)
+          }
+       } else if len(c.String("config-machine")) > 0 {
+          if len(c.Args()) == 1 {
+             _, port, sender := getDefaultMagickBox()
+             saveDefaultMagickBox( c.Args()[0], port, sender )
+          } else {
+             machine, _, _ := getDefaultMagickBox()
+             fmt.Printf("{\"machine\": \"%s\"}\n", machine)
+          }
+       } else if len(c.String("config-port")) > 0 {
+          if len(c.Args()) == 1 {
+             machine, _, sender := getDefaultMagickBox()
+             saveDefaultMagickBox( machine, c.Args()[0], sender )
+          } else {
+             _, port, _ := getDefaultMagickBox()
+             fmt.Printf("{\"port\": \"%s\"}\n", port)
+          }
+       } else {
+         defaultAction(c)
+       }
+     }
+
      app.Commands = []cli.Command{
      {
         Name:      "pull",
         ShortName: "g",
-        Usage:     "retrieve matching jobs [pull <regular expression>]",
-        Description: "Download matching jobs as a zip file into the current directory.\n   Supply a regular expression to specify which session data to download.\n   Example:\n   > mb pull ip44\n   Downloads all sessions send from ip44.\n",
+        Usage:     "Retrieve matching jobs [pull <regular expression>]",
+        Description: "Download matching jobs as a zip file into the current directory.\n" +
+                     "   Supply a regular expression to specify which session data to download.\n" +
+                     "   Example:\n" +
+                     "   > mb pull ip44\n" +
+                     "   Downloads all sessions send from ip44.\n",
         Action: func(c *cli.Context) {
           if len(c.Args()) < 1 {
             fmt.Printf("Error: indiscriminate downloads are not supported, supply a regular expression that is matched against all fields\n")
           } else {
-            getListOfJobs( c.Args().First(), true)
+            getListOfJobs( c.Args().First(), GET_DOWNLOAD)
           }
         },
      },
      {
+
         Name:      "push",
         ShortName: "p",
-        Usage:     "send a directory for processing [push <aetitle> <dicom directory>]",
-        Description: "Send a directory with DICOM data to the MagickBox for processing.\n   The aetitle is used to specify what type of processing will be run.\n\n   Example:\n   > mb push ProcFS53 /space/data/DICOMS/Subj001/\n   Sends the data in the specified directory to the currently defined default MB instance.\n",
+        Usage:     "Send a directory for processing [push <aetitle> <dicom directory>]",
+        Description: "Send a directory with DICOM data to the MagickBox for processing.\n" +
+                     "   The <aetitle> is used to specify what type of processing will be run.\n\n" +
+                     "   Example:\n" +
+                     "   > mb push ProcFS53 /space/data/DICOMS/Subj001/\n" +
+                     "   Sends the specified directory for FreeSurfer processing to the currently defined default MB instance.\n",
         Action: func(c *cli.Context) {
           if len(c.Args()) < 2 {
             fmt.Printf("Error: don't know what to send (usage: <aetitle> <directory to send>)\n")
@@ -582,11 +707,14 @@ func main() {
      {
         Name:      "remove",
         ShortName: "r",
-        Usage:     "remove data [remove <regular expression>]",
-        Description: "Remove session data stored in MagickBox.\n\n   Example:\n   > mb remove tmp.1234567\n   Removes a specific study identified by its scratchdir.\n",
+        Usage:     "Remove data [remove <regular expression>]",
+        Description: "Remove session data stored in MagickBox.\n\n" +
+                     "   Example:\n" +
+                     "   > mb remove tmp.1234567\n" +
+                     "   Removes a specific study identified by its scratchdir.\n",
         Action: func(c *cli.Context) {
           if len(c.Args()) < 1 {
-            fmt.Printf("Error: It is not allowed to remove indiscriminantly sessions from MagickBox, provide a regular expression.\n")
+            fmt.Printf("Error: It is not allowed to remove indiscriminately sessions from MagickBox, provide a regular expression.\n")
           } else {
             removeJobs( c.Args()[0] )
           }
@@ -595,37 +723,81 @@ func main() {
      {
         Name:      "list",
         ShortName: "l",
-        Usage:     "show list of matching jobs [list [regular expression]]",
-        Description: "Display a list of matching jobs.\n\n   Example:\n   > mb list\n   Returns a list of all jobs in json format.\n\n   Example:\n   > mb list ip44\n   Returns a list of all jobs that have been send from ip44.\n",
+        Usage:     "Show list of matching jobs [list [regular expression]]",
+        Description: "Display a list of matching jobs.\n\n" +
+                     "   Example:\n" +
+                     "   > mb list\n" +
+                     "   Returns a list of all jobs as JSON.\n\n" +
+                     "   Example:\n" +
+                     "   > mb list ip44\n" +
+                     "   Returns a list of all jobs that have been send from ip44.\n",
         Action: func(c *cli.Context) {
           if len(c.Args()) == 1 {
-            getListOfJobs( c.Args()[0], false )
+            getListOfJobs( c.Args()[0], GET_VIEW )
           } else {
-            getListOfJobs( ".*", false )
+            getListOfJobs( ".*", GET_VIEW )
+          }
+        },
+     },
+     {
+        Name:      "log",
+        ShortName: "l",
+        Usage:     "Show processing log of matching jobs [log [regular expression]]",
+        Description: "Display a list of matching jobs with log entries. This is very similar to the list\n" +
+                     "   command but requires a separate call to MagickBox for each job (might be slow).\n\n" +
+                     "   Example:\n" +
+                     "   > mb log\n" +
+                     "   Returns all processing logs in json format.\n\n" +
+                     "   Example:\n" +
+                     "   > mb log ip44\n" +
+                     "   Returns a list of all processing logs that have been send from ip44.\n",
+        Action: func(c *cli.Context) {
+          if len(c.Args()) == 1 {
+            getListOfJobs( c.Args()[0], GET_LOG )
+          } else {
+            getListOfJobs( ".*", GET_LOG )
           }
         },
      },
      {
         Name:      "queryMachines",
         ShortName: "q",
-        Usage:      "display list of known MagickBox instances [queryMachines]",
-        Description: "Display a list of all known MagickBox machines. This feature uses\n   a centralized service hosted at the MMIL.\n",
+        Usage:      "Display list of known MagickBox instances [queryMachines]",
+        Description: "Display a list of all known MagickBox machines. This feature uses\n" +
+                     "   a centralized service hosted at the MMIL.\n",
         Action: func(c *cli.Context) {
-            //println("query task: ", c.Args().First())
             getMagickBoxes()
         },
      },
      {
-        Name:      "selectMachine",
+        Name:      "setMachine",
         ShortName: "s",
-        Usage:      "specify the default MagickBox [selectMachine [<IP> <port>]]",
-        Description: "Without any arguments this call will return the default MagickBox.\n   Specify the internet address (IP) and the port number to change the default.\n",
+        Usage:      "Specify the default MagickBox [setMachine [<IP> <port>]]",
+        Description: "Without any arguments this call will return the default MagickBox.\n" +
+                     "   Specify the internet address (IP) and the port number to change the default\n" +
+                     "   MagickBox used for subsequent calls of this tool.\n",
         Action: func(c *cli.Context) {
           if len(c.Args()) == 2 {
-             saveDefaultMagickBox( c.Args()[0], c.Args()[1])
+             _, _, sender := getDefaultMagickBox()
+             saveDefaultMagickBox( c.Args()[0], c.Args()[1], sender )
           } else {
-            machine, port := getDefaultMagickBox()
+            machine, port, _ := getDefaultMagickBox()
             fmt.Printf("{\"machine\": \"%s\", \"port\": \"%s\"}\n", machine, port)
+          }
+        },
+     },
+     {
+        Name:      "setSender",
+        ShortName: "w",
+        Usage:      "Specify a string identifying the sender [setSender [<sender>]]",
+        Description: "Without any arguments this call will return the current sender.\n" +
+                     "   Specify the sender string used as AETitle of the caller for subsequent calls of this tool.\n",
+        Action: func(c *cli.Context) {
+          if len(c.Args()) == 1 {
+             saveSender( c.Args()[0] )
+          } else {
+            sender := getSender()
+            fmt.Printf("{\"sender\": \"%s\"}\n", sender)
           }
         },
      },
