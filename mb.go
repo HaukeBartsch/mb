@@ -1,6 +1,9 @@
 // Could parse DICOM as well, encrypt most tag entries and send, on receive uncrypt
 // anonymized processing pipeline
 
+// add interface to configure processing pipelines, this would include aseg or surface,
+// do gradunwarp or not etc.
+
 package main
 
 import (
@@ -799,6 +802,37 @@ func main() {
             sender := getSender()
             fmt.Printf("{\"sender\": \"%s\"}\n", sender)
           }
+        },
+     },
+     {
+        Name:      "computeModules",
+        ShortName: "c",
+        Usage:      "Get list of buckets for the current machine",
+        Action: func(c *cli.Context) {
+           machine, port, _ := getDefaultMagickBox()
+
+           url := fmt.Sprintf("http://%v:%v/code/php/getInstalledBuckets.php", machine, port)
+
+           resp, err := http.Get(url)
+           if err != nil {
+              println("Error: could not read installed buckets on", machine, ":", port)
+           }
+           defer resp.Body.Close()
+           body, err := ioutil.ReadAll(resp.Body)
+           if err != nil {
+              println("Error: could not read response from machine")
+           }
+           var f interface{}
+           err = json.Unmarshal(body[:len(body)], &f)
+           if err != nil {
+               fmt.Printf("%v\n%s\n\n", err, body)
+           }
+
+           b, err := json.MarshalIndent(f, "", "  ")
+           if err != nil {
+              fmt.Println("error:", err)
+           }
+           fmt.Printf("%v\n", string(b))
         },
      },
   }
