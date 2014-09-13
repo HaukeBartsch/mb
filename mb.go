@@ -124,32 +124,47 @@ func getMagickBoxes() (interface{}) {
 
 func getListOfJobs( reg string, ttype int) {
 
-  // machine, port, _ := getDefaultMagickBox()
   var all_ms []Machine = getActiveMagickBoxes()
   var results []map[string]interface{}
+  c := make(chan []map[string]interface{})
 
   for _,v := range all_ms {
-    machine := v.Machine
-    port    := v.Port
 
-    url := fmt.Sprintf("http://%v:%v/code/php/getScratch.php", machine, port)
+    go func(machine string, port string) {
 
-    resp, err := http.Get(url)
-    if err != nil {
-      log.Fatal("Error: could not get list of jobs")
-    }
-    defer resp.Body.Close()
-    body, err := ioutil.ReadAll(resp.Body)
+      url := fmt.Sprintf("http://%v:%v/code/php/getScratch.php", machine, port)
 
-    var res = parseGet(body, reg, ttype, machine, port)
+      resp, err := http.Get(url)
+      if err != nil {
+        log.Fatal("Error: could not get list of jobs")
+      }
+      defer resp.Body.Close()
+      body, err := ioutil.ReadAll(resp.Body)
 
-    for _,v := range res {
-      v["Machine"] = machine
-      v["Port"] = port
-    }
+      var res = parseGet(body, reg, ttype, machine, port)
 
-    results = append(results, res...)
+      for _,v := range res {
+        v["Machine"] = machine
+        v["Port"] = port
+      }
+      //fmt.Println("put something into the channel")
+      c <- res
+    }(v.Machine, v.Port)
   }
+  timeout := time.After(5000 * time.Millisecond)
+  loop:
+  for i := 0; i < len(all_ms); i++ {
+    select {
+    case res := <-c:
+      results = append(results, res...)
+      //fmt.Println("got something from one go routing...")
+      //break
+    case <-timeout:
+      fmt.Fprintf(os.Stderr, "Warning: %v machines did not answer in time...", len(all_ms)-i)
+      break loop
+    }
+  }
+
   if ttype == GET_VIEW || ttype == GET_LOG {
     b, err := json.MarshalIndent(results, "", "  ")
     if err != nil {
@@ -228,7 +243,6 @@ func parseGet(buf []byte, reg string, ttype int, machine string, port string) ( 
 
 func downloadFile(scratchdir string, pid string, machine string, port string) {
 
-  //machine, port, _ := getDefaultMagickBox()
   url := fmt.Sprintf("http://%v:%v/code/php/getOutputZip.php?folder=%s", machine, port, scratchdir)
   res, err := http.Get(url)
   if err != nil {
@@ -399,124 +413,25 @@ func sendJob( aetitle string, dir string, arguments string) {
   if err != nil {
       log.Fatal(err)
   } else {
-/*      body := &bytes.Buffer{}
-      _, err = body.ReadFrom(resp.Body)
-      if err != nil {
-          log.Fatal(err)
-      }
-      resp.Body.Close()
-      if resp.StatusCode != 200 {
-        fmt.Println(resp.StatusCode)
-        fmt.Println(resp.Header)
-        fmt.Println(body)
-      }*/
-
-
-  buf := make([]byte, 1024)
-  var all []byte
-  for {
-    n, err := resp.Body.Read(buf)
-    if n == 0 {
-      break
-    }
-    if err != nil {
-      log.Fatal(err)
-    }
-    all = append(all, buf[:n]...)
-    fmt.Printf("writing %3.2fmb\r", float64(len(all))/1024.0/1024.0)
-  }
-  fp.Write(all)
-  resp.Body.Close()
-
-
-
- /*   mr, err := request.MultipartReader()
-    if err != nil {
-        return
-    }
-    length := request.ContentLength
+    // this does not work
+    buf := make([]byte, 1024)
+    var all []byte
     for {
-
-        part, err := mr.NextPart()
-        if err == io.EOF {
-            break
-        }
-        var read int64
-        var p float32
-        dst, err := os.OpenFile("dstfile", os.O_WRONLY|os.O_CREATE, 0644)
-        if err != nil {
-            return
-        }
-        for {
-            buffer := make([]byte, 100000)
-            cBytes, err := part.Read(buffer)
-            if err == io.EOF {
-                break
-            }
-            read = read + int64(cBytes)
-            //fmt.Printf("read: %v \n",read )
-            p = float32(read) / float32(length) *100
-            fmt.Printf("progress: %v \n",p )
-            dst.Write(buffer[0:cBytes])
-        }
+      n, err := resp.Body.Read(buf)
+      if n == 0 {
+        break
+      }
+      if err != nil {
+        log.Fatal(err)
+      }
+      all = append(all, buf[:n]...)
+      fmt.Printf("writing %3.2fmb\r", float64(len(all))/1024.0/1024.0)
     }
-*/
-
+    fp.Write(all)
+    resp.Body.Close()
 
   }
 
-
-
-
-/*  // send zip file for processing
-  easy := curl.EasyInit()
-  defer easy.Cleanup()
-
-  url := fmt.Sprintf("http://%v/code/php/processZip.php", machine)
-  var portNumber int
-  portNumber, err = strconv.Atoi(port)
-  if err != nil {
-    fmt.Printf("Error: could not convert port number to int %v", err);
-    return
-  }
-  easy.Setopt(curl.OPT_URL, url)
-  easy.Setopt(curl.OPT_PORT, portNumber)
-  easy.Setopt(curl.OPT_POST, true)
-  //easy.Setopt(curl.OPT_VERBOSE, true)
-
-  easy.Setopt(curl.OPT_HTTPHEADER, []string{"Expect:"})
-
-  //postdata := "aetitle=" + aetitle + "&filename=" + filepath.Base(zipFilename)
-  //easy.Setopt(curl.OPT_POSTFIELDS, postdata)
-
-  form := curl.NewForm()
-  form.Add("aetitle", aetitle)
-  form.Add("description", "Send by MagickBox")
-  form.Add("filename", filepath.Base(zipFilename))
-  // form.AddFile("theFile", "./readme.txt")
-  if _, err := os.Stat(zipFilename); os.IsNotExist(err) {
-    fmt.Printf("no such file or directory: %s", zipFilename)
-    return
-  }
-  form.AddFile("theFile", zipFilename)
-
-  easy.Setopt(curl.OPT_HTTPPOST, form)
-
-  easy.Setopt(curl.OPT_NOPROGRESS, false)
-  easy.Setopt(curl.OPT_PROGRESSFUNCTION, func(dltotal, dlnow, ultotal, ulnow float64, _ interface{}) bool {
-    fmt.Printf("Uploading %3.2fmb\r", ulnow/1024/1024)
-    return true
-  })
-
-
-  if err := easy.Perform(); err != nil {
-    println("ERROR: ", err.Error())
-  }
-  println("")  // a last newline
-  os.Remove(zipFilename)
-  //time.Sleep(1000000000) // wait gorotine 
-
-  */
 }
 
 // jobs will be removed from all active machines
@@ -526,30 +441,41 @@ func removeJobs( reg string ) {
   var ms []Machine = getActiveMagickBoxes()
   // return values from each machine
   var removed []map[string]interface{}
-
+  // collect the results
+  c := make(chan []map[string]interface{})
   for _, v := range ms {
 
-    // machine, port, _ := getDefaultMagickBox()
-    machine := v.Machine
-    port := v.Port
+    go func(machine string, port string) {
+      url := fmt.Sprintf("http://%v:%v/code/php/getScratch.php", machine, port)
 
-    url := fmt.Sprintf("http://%v:%v/code/php/getScratch.php", machine, port)
+      resp, err := http.Get(url)
+      if err != nil {
+        println("Error: could not get list of jobs")
+      }
+      defer resp.Body.Close()
+      body, err := ioutil.ReadAll(resp.Body)
 
-    resp, err := http.Get(url)
-    if err != nil {
-      println("Error: could not get list of jobs")
-    }
-    defer resp.Body.Close()
-    body, err := ioutil.ReadAll(resp.Body)
-
-    var rem = parseRemove(body, reg, machine, port)
-    for _,v := range rem {
-      v["Machine"] = machine
-      v["Port"] = port
-    }
-
-    removed = append(removed, rem...)
+      var rem = parseRemove(body, reg, machine, port)
+      for _,v := range rem {
+        v["Machine"] = machine
+        v["Port"] = port
+      }
+      c <- rem
+    }(v.Machine, v.Port)
   }
+  timeout := time.After(500 * time.Millisecond)
+  loop:
+  for i := 0; i < len(ms); i++ {
+    select {
+      case  rem := <-c:
+        removed = append(removed, rem...)
+        break
+      case <-timeout:
+        fmt.Fprintf(os.Stderr, "Warning: we timed out, some machines might have taken too long to answer")
+        break loop
+    }
+  }
+
   b, err := json.MarshalIndent(removed, "", "  ")
   if err != nil {
     fmt.Println("error:", err)
@@ -621,7 +547,9 @@ func removeFile(scratchdir string, pid string, machine string, port string) {
 
   url := fmt.Sprintf("http://%v:%v/code/php/deleteStudy.php?scratchdir=%s", machine, port, scratchdir)
 
-  resp, err := http.Get(url)
+  timeout := time.Duration(5 * time.Second)
+  client := http.Client{ Timeout: timeout }
+  resp, err := client.Get(url)
   if err != nil {
     println("Error: could not reach machine ", scratchdir)
   }
@@ -694,64 +622,6 @@ func getActiveMagickBoxes() ( []Machine ) {
   return ms
 }
 
-
-/*func getDefaultMagickBox() (machine string, port string, sender string) {
-            usr,_ := user.Current()
-            dir := usr.HomeDir + "/.mb"
-            fi, err := os.Open(dir)
-            if err != nil {
-              // could be our first time, there is no .mb file, lets create a dummy file
-              //log.Println("Error: configuration incomplete, call queryMachines/selectMachine/sender first...")
-              saveDefaultMagickBox( "unknown", "unknown", "unknown" )
-              fi, err = os.Open(dir)
-              if err != nil {
-                 log.Fatal("Error: Could not create default mb file at", dir)
-              }
-              return 
-            }
-            defer func() {
-              if err := fi.Close(); err != nil {
-                log.Fatal(err)
-              }
-            }()
-            buf := make([]byte, 1024)
-            n, err := fi.Read(buf)
-            if err != nil {
-              panic(err)
-            }
-            // os.Stdout.Write(buf)
-            var m Machine
-            err = json.Unmarshal(buf[:n], &m)
-            if err != nil {
-              fmt.Println("Error: no default machine setup ->", err)
-            }
-            machine = m.Machine
-            port = m.Port
-            sender = m.Sender
-            return
-}
-
-func saveDefaultMagickBox( machine string, port string, sender string ) {
-            usr,_ := user.Current()
-            dir := usr.HomeDir + "/.mb"
-            m := Machine{Machine: machine, Port: port, Sender: sender}
-            b, err := json.Marshal(m)
-            // os.Stdout.Write(b)
-            if err != nil { panic(err) }
-
-            fi, err := os.Create(dir)
-            if err != nil { panic(err) }
-            defer func() {
-              if err := fi.Close(); err != nil {
-                panic(err)
-              }
-            }()
-            n := len(b)
-            if _, err := fi.Write(b[:n]); err != nil {
-              panic(err)
-            }
-            // println("set magick box to:", m.Machine, ":", m.Port, "(saved in", dir, ")")            
-} */
 
 func saveSender( sender string ) {
   usr,_ := user.Current()
