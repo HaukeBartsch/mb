@@ -22,6 +22,7 @@ import (
        "os/user"
        "time"
        "regexp"
+       "strconv"
        "encoding/json"
        "math/rand"
        "archive/zip"
@@ -30,6 +31,7 @@ import (
        "path/filepath"
        "mime/multipart"
        "log"
+       "sort"
        "github.com/codegangsta/cli"
 )
 
@@ -43,6 +45,7 @@ type Machine struct {
   Machine string
   Port string
   Sender string
+  Status [][]string
 }
 
 // structure returned by getInstalledBuckets + machine and port
@@ -58,8 +61,10 @@ type Process struct{
 
 type Settings struct {
   Sender string
+  Timeout time.Duration // in milliseconds
 }
 
+var globalSettings Settings
 
 func printListOfMagickBoxes( f interface{} ) {
 
@@ -104,10 +109,29 @@ func printListOfMagickBoxes( f interface{} ) {
 
 }
 
+// get a list of lists back, each entry is [name of bucket, running, queued, workers]
+func getStatus(machine string, port string) [][](string) {
+
+  url := fmt.Sprintf("http://%v:%v/code/php/getStatus.php", machine, port)
+
+  resp, err := http.Get(url)
+  if err != nil {
+    println("Error: could not query status")
+  }
+  defer resp.Body.Close()
+  body, err := ioutil.ReadAll(resp.Body)
+
+  // now parse the body
+  var f [][]string
+  json.Unmarshal(body, &f)
+
+  return f  
+}
+
 
 // return all MagickBox machines known
 // todo: check if they are visible as well 
-func getMagickBoxes() (interface{}) {
+func getMagickBoxes() (ms []Machine) {
   resp, err := http.Get("http://mmil.ucsd.edu/MagickBox/queryMachines.php")
   if err != nil {
     println("Error: could not query mmil.ucsd.edu")
@@ -116,7 +140,7 @@ func getMagickBoxes() (interface{}) {
   body, err := ioutil.ReadAll(resp.Body)
 
   // now parse the body
-  var f interface{}
+  var f []Machine
   json.Unmarshal(body, &f) // unnamed structure we will print everything that comes back
 
   return f
@@ -136,7 +160,7 @@ func getListOfJobs( reg string, ttype int) {
 
       resp, err := http.Get(url)
       if err != nil {
-        log.Fatal("Error: could not get list of jobs")
+        return // log.Fatal("Error: could not get list of jobs for ", machine, " ", port)
       }
       defer resp.Body.Close()
       body, err := ioutil.ReadAll(resp.Body)
@@ -151,7 +175,10 @@ func getListOfJobs( reg string, ttype int) {
       c <- res
     }(v.Machine, v.Port)
   }
-  timeout := time.After(5000 * time.Millisecond)
+  timeout := time.After(globalSettings.Timeout)
+  if ttype == GET_LOG { // wait twice as long because log takes a long time
+    timeout = time.After(globalSettings.Timeout*20)
+  }
   loop:
   for i := 0; i < len(all_ms); i++ {
     select {
@@ -160,7 +187,9 @@ func getListOfJobs( reg string, ttype int) {
       //fmt.Println("got something from one go routing...")
       //break
     case <-timeout:
-      fmt.Fprintf(os.Stderr, "Warning: %v machines did not answer in time...", len(all_ms)-i)
+      ss := ""
+      if len(all_ms)-i > 1 { ss = "s" }
+      fmt.Fprintf(os.Stderr, "Warning: %v machine%s did not answer in time...\n", len(all_ms)-i, ss)
       break loop
     }
   }
@@ -209,6 +238,7 @@ func parseGet(buf []byte, reg string, ttype int, machine string, port string) ( 
                    resp, err := http.Get(url)
                    if err != nil {
                       println("Error: could not get log for ", scratchdir)
+                      break
                    }
                    defer resp.Body.Close()
                    body, err := ioutil.ReadAll(resp.Body)
@@ -301,6 +331,73 @@ func newfileUploadRequest(uri string, params map[string]string, paramName, path 
   return request, err
 }
 
+// interface to sort machines by lowerst load for a processing bucket
+type MachineList struct{
+  ms []Machine
+  bucket string
+}
+func (a MachineList) Len() int { return len(a.ms) }
+func (a MachineList) Swap(i, j int) { a.ms[i], a.ms[j] = a.ms[j], a.ms[i] }
+func (a MachineList) Less(i, j int) bool {
+  var load1 = -1
+  var load2 = -1
+  for _,v := range a.ms[i].Status {
+    if v[0] == a.bucket {
+      val1,_ := strconv.Atoi(v[3])
+      val2,_ := strconv.Atoi(v[2])
+      load1 = val1-val2 // (available - queued)
+      break
+    }
+  }
+  for _,v := range a.ms[j].Status {
+    if v[0] == a.bucket {
+      val1,_ := strconv.Atoi(v[3])
+      val2,_ := strconv.Atoi(v[2])
+      load2 = val1-val2 // (available - queued)
+      break
+    }
+  }
+  if load1 < load2 {
+    return true
+  }
+
+  return false
+}
+
+
+// return the machine with the lowest load first
+func lowestLoad( ms []Machine, aetitle string ) ( []Machine ) {
+
+  var ll []Machine
+  ch := make(chan Machine)
+  for _,v := range ms {
+    go func(m Machine) {
+      s := getStatus(m.Machine, m.Port)
+      m.Status = s
+      ch <- m
+    }(v)
+  }
+  timeout := time.After(globalSettings.Timeout) // time.After(500 * time.Millisecond)
+  loop:
+  for i := 0; i < len(ms); i++ {
+    select {
+    case  rem := <-ch:
+      ll = append(ll, rem)
+      break
+    case <-timeout:
+      fmt.Fprintf(os.Stderr, "Warning: we timed out looking for the status, some machines might have taken too long to answer\n")
+      break loop
+    }
+  }
+  var sml = MachineList{
+    ms: ll,
+    bucket: aetitle,
+  }
+  sort.Sort(sml)
+  return sml.ms
+}
+
+
 func sendJob( aetitle string, dir string, arguments string) {
 
   var all_ms []Machine = getActiveMagickBoxes()
@@ -322,8 +419,10 @@ func sendJob( aetitle string, dir string, arguments string) {
     fmt.Println("Error: no machine found that provides aetitle %v", aetitle)
     return
   }
-  // for now just pick randomly (should query which machine has lower load)
-  var pick = rand.Intn(len(ms_valid))
+  
+  ms_valid = lowestLoad( ms_valid, aetitle )
+  var pick = 0
+  // var pick = rand.Intn(len(ms_valid))
   machine := ms_valid[pick].Machine
   port    := ms_valid[pick].Port
   sender  := getSender()
@@ -463,7 +562,7 @@ func removeJobs( reg string ) {
       c <- rem
     }(v.Machine, v.Port)
   }
-  timeout := time.After(500 * time.Millisecond)
+  timeout := time.After(globalSettings.Timeout) // time.After(500 * time.Millisecond)
   loop:
   for i := 0; i < len(ms); i++ {
     select {
@@ -471,7 +570,7 @@ func removeJobs( reg string ) {
         removed = append(removed, rem...)
         break
       case <-timeout:
-        fmt.Fprintf(os.Stderr, "Warning: we timed out, some machines might have taken too long to answer")
+        fmt.Fprintf(os.Stderr, "Warning: we timed out, some machines might have taken too long to answer\n")
         break loop
     }
   }
@@ -528,18 +627,8 @@ func parseRemove(buf []byte, reg string, machine string, port string) ( removed 
         if foundOne {
             removeFile(scratchdir, pid, machine, port)
             returned = append(returned, bb)
-            /*if count > 0 {
-              fmt.Printf(",")
-            }
-            count = count + 1
-            b, err := json.MarshalIndent(bb, "", "  ")
-            if err != nil {
-              fmt.Println("error:", err)
-            }
-            os.Stdout.Write(b) */
         }
     }
-    //fmt.Printf("]\n")
     return returned
 }
 
@@ -547,11 +636,11 @@ func removeFile(scratchdir string, pid string, machine string, port string) {
 
   url := fmt.Sprintf("http://%v:%v/code/php/deleteStudy.php?scratchdir=%s", machine, port, scratchdir)
 
-  timeout := time.Duration(5 * time.Second)
+  timeout := globalSettings.Timeout // time.Duration(5 * time.Second)
   client := http.Client{ Timeout: timeout }
   resp, err := client.Get(url)
   if err != nil {
-    println("Error: could not reach machine ", scratchdir)
+    println("Error: could not reach machine ", machine, ":", port, "to delete", scratchdir)
   }
 
   defer resp.Body.Close()
@@ -622,9 +711,91 @@ func getActiveMagickBoxes() ( []Machine ) {
   return ms
 }
 
+func loadSettings () Settings {
+  var m Settings
+  usr,_ := user.Current()
+  dir := usr.HomeDir + "/.mb"
+  fi, err := os.Open(dir)
+  if err != nil {
+    // saveSetting("Sender", "unknown")
+    // there is no file yet, lets create one
+    var s Settings
+    // use some default values if nothing has been specified
+    s.Sender = "unknown"
+    s.Timeout = time.Duration(1000) * time.Millisecond
+    // fmt.Println(s.Timeout, "was the timeout that we save now")
+
+    b, err := json.MarshalIndent(s, "", "  ")
+    if err != nil { panic(err) }
+    fi, err := os.Create(dir)
+    if err != nil { panic(err) }
+    n := len(b)
+    if _, err := fi.Write(b[:n]); err != nil {
+      panic(err)
+    }
+    fi.Close()
+    // fmt.Printf(" as text this is: %s", string(b))
+
+    fi, err = os.Open(dir)
+    if err != nil {
+      log.Fatal("Error: Could not create default mb file at", dir)
+    }
+    return m
+  }
+  defer func() {
+    if err := fi.Close(); err != nil {
+      log.Fatal(err)
+    }
+  }()
+  buf := make([]byte, 10024)
+  n, err := fi.Read(buf)
+  if err != nil {
+    panic(err)
+  }
+  err = json.Unmarshal(buf[:n], &m)
+  if err != nil {
+    fmt.Println("Error: no default machine setup ->", err)
+  }
+  return m
+}
+
+func saveSetting ( name string, value string ) {
+  usr,_ := user.Current()
+  dir := usr.HomeDir + "/.mb"
+  // if file exists load it here
+  var s Settings
+  if _, err := os.Stat(dir); !os.IsNotExist(err) {
+     s = loadSettings()
+  }
+  // now add our values
+  if name == "Sender" {
+    s.Sender = value
+  } else if name == "Timeout" {
+    v, _ := time.ParseDuration(value)
+    s.Timeout = v
+  }
+
+  b, err := json.MarshalIndent(s, "", "  ")
+  if err != nil { panic(err) }
+
+  fi, err := os.Create(dir)
+  if err != nil { panic(err) }
+  defer func() {
+    if err := fi.Close(); err != nil {
+      panic(err)
+    }
+  }()
+  n := len(b)
+  if _, err := fi.Write(b[:n]); err != nil {
+    panic(err)
+  }  
+}
+
 
 func saveSender( sender string ) {
-  usr,_ := user.Current()
+
+  saveSetting("Sender", sender)
+/*  usr,_ := user.Current()
   dir := usr.HomeDir + "/.mb"
   m := Settings{Sender: sender}
 
@@ -642,11 +813,14 @@ func saveSender( sender string ) {
   n := len(b)
   if _, err := fi.Write(b[:n]); err != nil {
     panic(err)
-  }
+  } */
 }
 
 func getSender() (sender string) {
-  usr,_ := user.Current()
+  s := loadSettings()
+  return s.Sender
+
+/*  usr,_ := user.Current()
   dir := usr.HomeDir + "/.mb"
   fi, err := os.Open(dir)
   if err != nil {
@@ -676,7 +850,7 @@ func getSender() (sender string) {
     fmt.Println("Error: no default machine setup ->", err)
   }
   sender = m.Sender
-  return
+  return */
 }
 
 func getInstalledBuckets(machine string, port string, filter *regexp.Regexp) ([]Process) {
@@ -745,20 +919,29 @@ func getInstalledBuckets(machine string, port string, filter *regexp.Regexp) ([]
 func main() {
      rand.Seed(time.Now().UTC().UnixNano())
 
+     globalSettings = loadSettings()
+
      app := cli.NewApp()
      app.Name = "mb"
      app.Usage = "MagickBox command shell for query, send, retrieve, and deletion of data.\n\n" +
-                 "   Start by listing known MagickBox instances (queryMachines). Identify your machines\n" +
-                 "   and add them using 'activeMachines add'. They will be used for all future commands.\n\n" +
-                 "   Also add your own identity using the setSender command. These steps need to be done only once.\n\n" +
+                 "   Setup: Start by listing known MagickBox instances (queryMachines). Identify your machines\n" +
+                 "     and add them using 'activeMachines add'. They will be used for all future commands.\n\n" +
+                 "     Add your own identity using the setSender command. You can also add your projects name\n" +
+                 "     (see example below) to make it easier to identify your session later.\n\n" +
                  "   Most calls return textual output in JSON format that can be processed by tools\n" +
                  "   such as jq (http://stedolan.github.io/jq/).\n\n" +
-                 "   Regular expressions are used to identify individual sessions. They are applied\n" +
-                 "   to all field values returned by the list command. If a session matches, the\n" +
-                 "   command will be applied to it (list, push, pull, remove).\n\n" +
-                 "   If data is send (push) and there is more than 1 machine available that provide that processing\n" +
-                 "   one of them will be selected by random. Commands such as 'list' will return the machine and port\n" +
-                 "   used for that session."
+                 "   Regular expressions are used to identify individual sessions. They can be supplied as\n" +
+                 "   an additional argument to commands like list, log, push, pull, and remove.\n" +
+                 "   Only if a session matches, the command will be applied.\n\n" +
+                 "   If data is send (push) and there is more than 1 machine available that provide that type of processing\n" +
+                 "   one of them will be selected based on load. Commands such as 'list' will return the machine and port\n" +
+                 "   used for that session.\n\n" +
+                 "   Example:\n" +
+                 "     > mb setSender \"hauke:testproject\"\n" +
+                 "     > mb push data_01/\n" +
+                 "     > mb push data_02/\n" +
+                 "     > mb list hauke:testproject\n" +
+                 "     > mb pull hauke:testproject\n"
      app.Version = "0.0.2"
      app.Author = "Hauke Bartsch"
      app.Email = "HaukeBartsch@gmail.com"
@@ -790,7 +973,9 @@ func main() {
         Name:      "pull",
         ShortName: "g",
         Usage:     "Retrieve matching jobs [pull <regular expression>]",
-        Description: "Download matching jobs as a zip file into the current directory.\n" +
+        Description: "Download matching jobs as a zip file into the current directory.\n\n" +
+                     "   If matching jobs are on more than one machine one download session per\n" +
+                     "   machine will be used to retrieve the results.\n\n" +
                      "   Supply a regular expression to specify which session data to download.\n" +
                      "   Example:\n" +
                      "   > mb pull ip44\n" +
@@ -884,10 +1069,48 @@ func main() {
         ShortName: "q",
         Usage:      "Display list of known MagickBox instances [queryMachines]",
         Description: "Display a list of all known MagickBox machines. This feature uses\n" +
-                     "   a centralized service hosted at the MMIL.\n",
+                     "   a centralized service hosted at the MMIL.\n\n" +
+                     "   If [with status] is supplied as an argument each machine will be queried\n" +
+                     "   and all machines will contain status values for each processing bucket\n" +
+                     "   [name, number of running, number of queued, number of processing slots].\n",
         Action: func(c *cli.Context) {
-            f := getMagickBoxes()
-            printListOfMagickBoxes( f )
+            ms := getMagickBoxes()
+            var ms_with_status []Machine
+            if (len(c.Args()) == 2) && (c.Args()[0] == "with") && (c.Args()[1] == "status") {
+              ch := make(chan Machine)
+              for _,v := range ms {
+                go func(m Machine) {
+                  s := getStatus(m.Machine, m.Port)
+                  m.Status = s
+                  ch <- m
+                }(v)
+              }
+              timeout := time.After(globalSettings.Timeout) //time.After(500 * time.Millisecond)
+              loop:
+              for i := 0; i < len(ms); i++ {
+                select {
+                case  rem := <-ch:
+                  ms_with_status = append(ms_with_status, rem)
+                  break
+                case <-timeout:
+                  fmt.Fprintf(os.Stderr, "Warning: we timed out looking for the status, some machines might have taken too long to answer\n")
+                  break loop
+                }
+              }
+            }
+            for _,v := range ms {
+              found := false
+              for _,vv := range ms_with_status {
+                if (vv.Machine == v.Machine) && (vv.Port == v.Port) {
+                  found = true
+                  break
+                }
+              }
+              if !found {
+                ms_with_status = append(ms_with_status, v)
+              }
+            }
+            printListOfMagickBoxes( ms_with_status )
         },
      },
 /*     {
@@ -923,9 +1146,40 @@ func main() {
         },
      },
      {
+        Name:      "setSetting",
+        Usage:      "Get or overwrite a program setting [setSetting [<name> | <name> <value>]]",
+        Description: "Without any arguments this call will return all settings.\n" +
+                     "   Specify the setting and its new value to save it.\n",
+        Action: func(c *cli.Context) {
+          if len(c.Args()) == 1 {
+             s := loadSettings()
+             if c.Args()[0] == "Sender" {
+               fmt.Printf("{\"sender\": \"%s\"}\n", s.Sender)
+             } else if c.Args()[0] == "Timeout" {
+               fmt.Printf("{\"Timeout\": \"%s\"}\n", s.Timeout.String())              
+             } else {
+               fmt.Printf("Error: unknown setting\n")
+             }
+          } else if len(c.Args()) == 2 {
+             if c.Args()[0] == "Sender" {
+               saveSetting("Sender", c.Args()[1])
+             } else if c.Args()[0] == "Timeout" {
+               v, _ := time.ParseDuration(c.Args()[1])
+               saveSetting("Timeout", v.String())
+             } else {
+               fmt.Println("Error: unknown setting")
+             }
+          } else {
+             s := loadSettings()
+             v, _ := json.MarshalIndent(s, "", "  ")
+             fmt.Printf("%s\n", v)           
+          }
+        },
+     },
+     {
         Name:      "computeModules",
         ShortName: "c",
-        Usage:      "Get list of buckets for the current machine",
+        Usage:      "Get list of buckets for the active machines",
         Action: func(c *cli.Context) {
           var ms []Machine = getActiveMagickBoxes()
 
@@ -935,13 +1189,24 @@ func main() {
           }
 
           var results []Process
+          ch := make(chan []Process)
           for _, v := range ms {
-          
-            machine := v.Machine
-            port := v.Port
-
-            var res = getInstalledBuckets(machine, port, filter)
-            results = append(results, res...)
+            go func(machine string, port string) {
+              var res = getInstalledBuckets(machine, port, filter)
+              ch <- res
+            }(v.Machine, v.Port)
+          }
+          timeout := time.After(globalSettings.Timeout) //time.After(1000 * time.Millisecond)
+          loop:
+          for i := 0; i < len(ms); i++ { // collect the results from all machines
+            select {
+            case  rem := <-ch:
+              results = append(results, rem...)
+              break
+            case <-timeout:
+              fmt.Fprintf(os.Stderr, "Warning: we timed out, some machines might have taken too long to answer\n")
+              break loop
+            }
           }
 
           b, err := json.MarshalIndent(results, "", "  ")
