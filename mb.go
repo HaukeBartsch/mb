@@ -112,17 +112,18 @@ func printListOfMagickBoxes( f interface{} ) {
 // get a list of lists back, each entry is [name of bucket, running, queued, workers]
 func getStatus(machine string, port string) [][](string) {
 
+  var f [][]string
   url := fmt.Sprintf("http://%v:%v/code/php/getStatus.php", machine, port)
 
   resp, err := http.Get(url)
   if err != nil {
     println("Error: could not query status")
+    return f
   }
   defer resp.Body.Close()
   body, err := ioutil.ReadAll(resp.Body)
 
   // now parse the body
-  var f [][]string
   json.Unmarshal(body, &f)
 
   return f  
@@ -404,31 +405,74 @@ func sendJob( aetitle string, dir string, arguments string) {
   // which machine should we use?
   // a machine which has the processing (AETitle) that is requested
   // from all the remaining machines pick one randomly (should check for load)
+
+  // get all processing buckets from all machines
+  var results []Process
+  ch := make(chan []Process)
+  for _, v := range all_ms {
+    go func(machine string, port string) {
+      var res = getInstalledBuckets(machine, port, nil)
+      ch <- res
+    }(v.Machine, v.Port)
+  }
+  timeout := time.After(globalSettings.Timeout) //time.After(1000 * time.Millisecond)
+  loop:
+  for i := 0; i < len(all_ms); i++ { // collect the results from all machines
+    select {
+    case  rem := <-ch:
+      results = append(results, rem...)
+      break
+    case <-timeout:
+      fmt.Fprintf(os.Stderr, "Warning: we timed out, some machines might have taken too long to answer\n")
+      break loop
+    }
+  }
+
+  // now look for the machines that provide our feature, count each machine only once
   var ms_valid []Machine
-  for _,v := range all_ms {
-    // get the list of processing options
-    var procs []Process = getInstalledBuckets(v.Machine, v.Port, nil)
-    for _,vv := range procs {
-      if vv.AETitle == aetitle {
-         ms_valid = append(ms_valid, v)
-         break
+  for _,v := range results {
+    if v.AETitle == aetitle {
+      for _,vv := range all_ms {
+        if (vv.Machine == v.Machine) && (vv.Port == v.Port) {
+          found := false
+          for _,vvv := range ms_valid {
+            if (vvv.Machine == vv.Machine) && (vvv.Port == vv.Port) {
+              found = true
+              break
+            }
+          }
+          if !found {
+            ms_valid = append(ms_valid, vv)
+            fmt.Println("found a machine ", vv.Machine, " ", vv.Port)
+          }
+        }
       }
     }
   }
   if len(ms_valid) == 0 {
-    fmt.Println("Error: no machine found that provides aetitle %v", aetitle)
+    fmt.Println("Error: no machine found that provides aetitle ", aetitle)
     return
   }
   
   ms_valid = lowestLoad( ms_valid, aetitle )
   var pick = 0
+  if len(ms_valid) == 0 {
+    fmt.Println("Error: could not get any machine that works, cannot push")
+    return
+  }
   // var pick = rand.Intn(len(ms_valid))
   machine := ms_valid[pick].Machine
   port    := ms_valid[pick].Port
   sender  := getSender()
 
-  fmt.Printf("send directory \"%s\" as \"%v\" for \"%s\" processing to %s:%s (%v machines provide this feature)\n", 
-      dir, sender, aetitle, machine, port, len(ms_valid))
+  ss := ""
+  sss := "s"
+  if len(ms_valid) > 0 { 
+    ss = "s"
+    sss = "" 
+  }
+  fmt.Printf("send directory \"%s\" as \"%v\" for \"%s\" processing to %s:%s (%v machine%s provide%s this bucket)\n", 
+      dir, sender, aetitle, machine, port, len(ms_valid), ss, sss)
 
   // walk through all the files in the directory
   buf := new(bytes.Buffer)
@@ -502,7 +546,8 @@ func sendJob( aetitle string, dir string, arguments string) {
       "arguments": arguments,
   }
   url := fmt.Sprintf("http://%v:%v/code/php/processZip.php", machine, port)
-  fmt.Println("Start sending compressed data...")
+  fileinfo, _ := os.Stat(zipFilename)
+  fmt.Printf("Start sending compressed data... (%vmb)\n", fileinfo.Size()/1024/1024)
   request, err := newfileUploadRequest(url, extraParams, "theFile", zipFilename)
   if err != nil {
       log.Fatal(err)
@@ -512,6 +557,8 @@ func sendJob( aetitle string, dir string, arguments string) {
   if err != nil {
       log.Fatal(err)
   } else {
+
+    fmt.Println("done...")
     // this does not work
     buf := make([]byte, 1024)
     var all []byte
@@ -570,7 +617,7 @@ func removeJobs( reg string ) {
         removed = append(removed, rem...)
         break
       case <-timeout:
-        fmt.Fprintf(os.Stderr, "Warning: we timed out, some machines might have taken too long to answer\n")
+        fmt.Fprintf(os.Stderr, "Warning: we timed out, some machines (%v) might have taken too long to answer\n", len(ms)-i)
         break loop
     }
   }
@@ -795,62 +842,11 @@ func saveSetting ( name string, value string ) {
 func saveSender( sender string ) {
 
   saveSetting("Sender", sender)
-/*  usr,_ := user.Current()
-  dir := usr.HomeDir + "/.mb"
-  m := Settings{Sender: sender}
-
-  b, err := json.MarshalIndent(m, "", "  ")
-  // os.Stdout.Write(b)
-  if err != nil { panic(err) }
-
-  fi, err := os.Create(dir)
-  if err != nil { panic(err) }
-  defer func() {
-    if err := fi.Close(); err != nil {
-      panic(err)
-    }
-  }()
-  n := len(b)
-  if _, err := fi.Write(b[:n]); err != nil {
-    panic(err)
-  } */
 }
 
 func getSender() (sender string) {
   s := loadSettings()
   return s.Sender
-
-/*  usr,_ := user.Current()
-  dir := usr.HomeDir + "/.mb"
-  fi, err := os.Open(dir)
-  if err != nil {
-    // could be our first time, there is no .mb file, lets create a dummy file
-    //log.Println("Error: configuration incomplete, call queryMachines/selectMachine/sender first...")
-    saveSender("unknown")
-    fi, err = os.Open(dir)
-    if err != nil {
-      log.Fatal("Error: Could not create default mb file at", dir)
-    }
-    return 
-  }
-  defer func() {
-    if err := fi.Close(); err != nil {
-      log.Fatal(err)
-    }
-  }()
-  buf := make([]byte, 1024)
-  n, err := fi.Read(buf)
-  if err != nil {
-    panic(err)
-  }
-  // os.Stdout.Write(buf)
-  var m Settings
-  err = json.Unmarshal(buf[:n], &m)
-  if err != nil {
-    fmt.Println("Error: no default machine setup ->", err)
-  }
-  sender = m.Sender
-  return */
 }
 
 func getInstalledBuckets(machine string, port string, filter *regexp.Regexp) ([]Process) {
@@ -861,6 +857,7 @@ func getInstalledBuckets(machine string, port string, filter *regexp.Regexp) ([]
   resp, err := http.Get(url)
   if err != nil {
     println("Error: could not read installed buckets on", machine, ":", port)
+    return results
   }
   defer resp.Body.Close()
   body, err := ioutil.ReadAll(resp.Body)
