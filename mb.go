@@ -177,9 +177,12 @@ func getListOfJobs( reg string, ttype int) {
     }(v.Machine, v.Port)
   }
   timeout := time.After(globalSettings.Timeout)
-  if ttype == GET_LOG { // wait twice as long because log takes a long time
+  if ttype == GET_LOG { // wait longer
     timeout = time.After(globalSettings.Timeout*20)
+  } else if ttype == GET_DOWNLOAD { // wait even longer (5hours)
+    timeout = time.After(time.Duration(5*60*1000) * time.Millisecond)
   }
+
   loop:
   for i := 0; i < len(all_ms); i++ {
     select {
@@ -190,7 +193,7 @@ func getListOfJobs( reg string, ttype int) {
     case <-timeout:
       ss := ""
       if len(all_ms)-i > 1 { ss = "s" }
-      fmt.Fprintf(os.Stderr, "Warning: %v machine%s did not answer in time...\n", len(all_ms)-i, ss)
+      fmt.Fprintf(os.Stderr, "Warning: %v machine%s did not answer...\n", len(all_ms)-i, ss)
       break loop
     }
   }
@@ -201,6 +204,7 @@ func getListOfJobs( reg string, ttype int) {
       fmt.Println("Error: could not print result")
     }
     os.Stdout.Write(b)
+    fmt.Println()
   }
 }
 
@@ -343,20 +347,20 @@ func (a MachineList) Less(i, j int) bool {
   var load1 = -1
   var load2 = -1
   for _,v := range a.ms[i].Status {
-    if v[0] == a.bucket {
-      val1,_ := strconv.Atoi(v[3])
-      val2,_ := strconv.Atoi(v[2])
-      load1 = val1-val2 // (available - queued)
-      break
+    if len(v) != 4 {
+      continue
     }
+    val1,_ := strconv.Atoi(v[1])
+    val2,_ := strconv.Atoi(v[2])
+    load1 = load1 + (val2 + val1)
   }
   for _,v := range a.ms[j].Status {
-    if v[0] == a.bucket {
-      val1,_ := strconv.Atoi(v[3])
-      val2,_ := strconv.Atoi(v[2])
-      load2 = val1-val2 // (available - queued)
-      break
+    if len(v) != 4 {
+      continue
     }
+    val1,_ := strconv.Atoi(v[1])
+    val2,_ := strconv.Atoi(v[2])
+    load2 = load2 + (val2 + val1)
   }
   if load1 < load2 {
     return true
@@ -443,7 +447,7 @@ func sendJob( aetitle string, dir string, arguments string) {
           }
           if !found {
             ms_valid = append(ms_valid, vv)
-            fmt.Println("found a machine ", vv.Machine, " ", vv.Port)
+            //fmt.Println("found a machine ", vv.Machine, " ", vv.Port)
           }
         }
       }
@@ -467,7 +471,7 @@ func sendJob( aetitle string, dir string, arguments string) {
 
   ss := ""
   sss := "s"
-  if len(ms_valid) > 0 { 
+  if len(ms_valid) > 1 {
     ss = "s"
     sss = "" 
   }
@@ -560,7 +564,7 @@ func sendJob( aetitle string, dir string, arguments string) {
 
     fmt.Println("done...")
     // this does not work
-    buf := make([]byte, 1024)
+/*  buf := make([]byte, 1024)
     var all []byte
     for {
       n, err := resp.Body.Read(buf)
@@ -573,7 +577,7 @@ func sendJob( aetitle string, dir string, arguments string) {
       all = append(all, buf[:n]...)
       fmt.Printf("writing %3.2fmb\r", float64(len(all))/1024.0/1024.0)
     }
-    fp.Write(all)
+    fp.Write(all) */
     resp.Body.Close()
 
   }
@@ -769,7 +773,9 @@ func loadSettings () Settings {
     var s Settings
     // use some default values if nothing has been specified
     s.Sender = "unknown"
-    s.Timeout = time.Duration(1000) * time.Millisecond
+    v, _ := time.ParseDuration("1s")
+    s.Timeout = v
+    //s.Timeout = time.Duration(1000) * time.Millisecond
     // fmt.Println(s.Timeout, "was the timeout that we save now")
 
     b, err := json.MarshalIndent(s, "", "  ")
@@ -835,7 +841,10 @@ func saveSetting ( name string, value string ) {
   n := len(b)
   if _, err := fi.Write(b[:n]); err != nil {
     panic(err)
-  }  
+  }
+
+  // re-read the global settings
+  globalSettings = loadSettings()
 }
 
 
@@ -1239,7 +1248,7 @@ func main() {
                   ms = append(ms, Machine{Machine: c.Args()[1], Port: c.Args()[2]})
                   saveActiveMagickBoxes( ms )
                 case "rm":
-                  fmt.Println("rm here")
+                  //fmt.Println("rm here")
                   // find out if that entry is part of the active MBs
                   var idx = -1
                   for k, v := range ms {

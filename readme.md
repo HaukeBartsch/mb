@@ -7,7 +7,7 @@ The MagickBox command shell is used to query, send, receive, and remove jobs fro
 
 You can download the command shell executable (mb) for your platform here:
 
-* Linux (MD5 = 31a40b4ce1fca92203cc23e908c568d5)
+* Linux (MD5 = 764a386128376368528cdd6e66f15487)
 	wget https://github.com/HaukeBartsch/MagickBox/raw/master/code/mb-shell/LinuxAMD64/mb
 
 * MacOSX (MD5 = e4a117f04006b6203e7f9c141035bb43)
