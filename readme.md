@@ -10,10 +10,10 @@ You can download the command shell executable (mb) for your platform here:
 * Linux (MD5 = 764a386128376368528cdd6e66f15487)
 	wget https://github.com/HaukeBartsch/MagickBox/raw/master/code/mb-shell/LinuxAMD64/mb
 
-* MacOSX (MD5 = e4a117f04006b6203e7f9c141035bb43)
+* MacOSX (MD5 = fe6dd4d960c289892bbcaf218561fdd0)
 	wget https://github.com/HaukeBartsch/MagickBox/raw/master/code/mb-shell/MacOSX/mb
 
-* Windows (MD5 = 8ac61aad7d99f1ce55b33aedf71a4a01)
+* Windows (MD5 = 68b9e25fef9f351eca91be531e2f033d)
 	wget https://github.com/HaukeBartsch/MagickBox/raw/master/code/mb-shell/Windows/mb.exe
 
 This is the basic help page of the application (after calling ./mb)::
