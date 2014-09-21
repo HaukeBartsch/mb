@@ -528,7 +528,7 @@ func sendJob( aetitle string, dir string, arguments string) {
   // write buffer to file
   workingdirectory := os.TempDir()
 
-  fp, _ := ioutil.TempFile(workingdirectory, "mbsend_zip")
+  fp, _ := ioutil.TempFile(workingdirectory, filepath.Base(dir) + "_")
   //fmt.Println("store data for send in", fp.Name())
   zipFilename := fp.Name()
   _, err = buf.WriteTo(fp)
