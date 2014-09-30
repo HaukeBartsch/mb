@@ -3,7 +3,7 @@
 MagickBox command shell
 ************************
 
-The MagickBox command shell is used to query, send, receive, and remove jobs from a MagickBox. This command line tool provides a convenient way to interface with MagickBox instances for larger projects. If you have ever worked with programs like git the usage should be familiar. 
+The MagickBox command shell is used to query, send, receive, and remove jobs from a MagickBox processing machine. This command line tool provides a convenient way to interface with MagickBox instances for larger projects. If you have ever worked with programs like git the usage should be familiar. 
 
 You can download the command shell executable (mb) for your platform here:
 
@@ -59,7 +59,7 @@ This is the basic help page of the application (after calling ./mb)::
 	   pull, g		Retrieve matching jobs [pull <regular expression>]
 	   push, p		Send a directory for processing [push <aetitle> <dicom directory> [<arguments>]]
 	   remove, r		Remove data [remove <regular expression>]
-	   list, l 		Show list of matching jobs [list [regular expression]]
+	   list, l		Show list of matching jobs [list [regular expression]]
 	   log, l		Show processing log of matching jobs [log [regular expression]]
 	   queryMachines, q	Display list of known MagickBox instances [queryMachines]
 	   setSender, w	  	Specify a string identifying the sender [setSender [<sender>]]
@@ -78,13 +78,15 @@ This is the basic help page of the application (after calling ./mb)::
 Setup
 =======
 
-Start by using the queryMachines command to identify your MagickBox (needs to be installed first). You need to set your MagickBox using 'selectMachine' once and all future calls to mb will use that machine. Also specify the 'sender' (your name or the name of your project for example) as it makes it easier later to identify your scans::
+Start by using the queryMachines command to identify your MagickBox. You need to set your active MagickBox machines for processing using 'activeMachines add <IP> <port>' once. All future calls to mb will use those machines. Also specify the 'sender' (your name or the name of your project for example) as it makes it easier later to identify your scans::
 
 	> mb queryMachines
 	[{ "id": "0", "machine": "137.110.172.9", "port": "2813" },
 	 { "id": "1", "machine": "10.193.13.181", "port": "2813" }]
-	> mb setMachine 137.110.172.9 2813
+	> mb activeMachines add 137.110.172.9 2813
 	> mb setSender hauke:project01
+
+If you add more than one machine with the same processing capabilities to the list of active machines the machine with the lowest load will be used for processing.
 
 ========
 Usage
@@ -94,7 +96,7 @@ The basic workflow is to first identify some data that is locally available on y
 
 	> mb push ProcGradUnwarp ~/data/testdata/DICOMS
 
-Mb will zip all files in the directory and upload the zip-file to your MagickBox for processing using the 'ProcGradUnwarp' bucket. Check on the progress of the processing using the 'list' and 'log' commands::
+Mb will zip all files in the directory and upload the zip-file to your MagickBox for processing addressing the 'ProcGradUnwarp' bucket. Check on the progress of the processing using the 'list' and 'log' commands::
 
 	> mb list hauke
 	[{
@@ -110,7 +112,7 @@ Mb will zip all files in the directory and upload the zip-file to your MagickBox
 	  "scratchdir": "tmp.cPQ1qwWqdw"
 	}]
 
-The 'list' command on its own will list all sessions that exist on the MagickBox, specifying the sender or parts of the sender string will limit the output to entries that match. Here we have a single session returned in JSON format. As a unique key to identify this session use the value of the 'scratchdir' key which is based on a random sequence of letters and numbers.
+The 'list' command on its own will list all sessions that exist on the list of active MagickBox processing machines, specifying the sender or parts of the sender string will limit the output to entries that match. Here we have a single session returned in JSON format. As a unique key to identify this session use the value of the 'scratchdir' key which is based on a random sequence of letters and numbers.
 
 Use any other string as a search term instead of the sender. You could specify "Sep" and all session that contain "Sep" will be listed. The specified string can also be a regular expression.
 
@@ -120,4 +122,4 @@ Once you have identified your session and processing finished you can download t
 
 	> mb pull hauke
 
-The output of your processing will be downloaded as a zip file into your current directory. The name of the zip file will contain the 'scratchdir'.
+The output of your processing will be downloaded as a zip file for each processing session. The name of the zip file will contain the 'scratchdir'.
