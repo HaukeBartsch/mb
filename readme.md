@@ -19,18 +19,32 @@ You can download the command shell executable (mb) for your platform here:
 This is the basic help page of the application (after calling ./mb)::
 
 	NAME:
-	   mb - MagickBox command shell for query, send, retrieve, and delete of data.
+	   mb - MagickBox command shell for query, send, retrieve, and deletion of data.
 	
-	   Start by listing known MagickBox instances (queryMachines). Identify your machine
-	   and use selectMachine to specify it for all future commands. Also add your own
-	   identity using the sender command. These steps need to be done only once.
+	   Setup: Start by listing known MagickBox instances (queryMachines). Identify your machines
+	     and add them using 'activeMachines add'. They will be used for all future commands.
+	
+	     Add your own identity using the setSender command. You can also add your projects name
+	     (see example below) to make it easier to identify your session later.
 	
 	   Most calls return textual output in JSON format that can be processed by tools
 	   such as jq (http://stedolan.github.io/jq/).
 	
-	   Regular expressions are used to identify individual sessions. They are applied
-	   to all field values returned by the list command. If a session matches, the
-	   command will be applied to it (list, push, pull, remove).
+	   Regular expressions are used to identify individual sessions. They can be supplied as
+	   an additional argument to commands like list, log, push, pull, and remove.
+	   Only if a session matches, the command will be applied.
+	
+	   If data is send (push) and there is more than 1 machine available that provide that type of processing
+	   one of them will be selected based on load. Commands such as 'list' will return the machine and port
+	   used for that session.
+	
+	   Example:
+	     > mb setSender "hauke:testproject"
+	     > mb push data_01/
+	     > mb push data_02/
+	     > mb list hauke:testproject
+	     > mb pull hauke:testproject
+	
 	
 	USAGE:
 	   mb [global options] command [command options] [arguments...]
@@ -43,22 +57,23 @@ This is the basic help page of the application (after calling ./mb)::
 	
 	COMMANDS:
 	   pull, g		Retrieve matching jobs [pull <regular expression>]
-	   push, p			 Send a directory for processing [push <aetitle> <dicom directory>]
-	   remove, r			      Remove data [remove <regular expression>]
-	   list, l 			      Show list of matching jobs [list [regular expression]]
-	   log, l			      	   Show processing log of matching jobs [log [regular expression]]
-	   queryMachines, q			   Display list of known MagickBox instances [queryMachines]
-	   setMachine, s  Specify the default MagickBox [setMachine [<IP> <port>]]
-	   setSender, w	  	  Specify a string identifying the sender [setSender [<sender>]]
-	   help, h    		  Shows a list of commands or help for one command
+	   push, p		Send a directory for processing [push <aetitle> <dicom directory> [<arguments>]]
+	   remove, r		Remove data [remove <regular expression>]
+	   list, l 		Show list of matching jobs [list [regular expression]]
+	   log, l		Show processing log of matching jobs [log [regular expression]]
+	   queryMachines, q	Display list of known MagickBox instances [queryMachines]
+	   setSender, w	  	Specify a string identifying the sender [setSender [<sender>]]
+	   setSetting 		Get or overwrite a program setting [setSetting [<name> | <name> <value>]]
+	   computeModules, c	Get list of buckets for the active machines
+	   activeMachines, a	Get list of active magick box machines
+	   help, h	   	Shows a list of commands or help for one command
 	   
 	GLOBAL OPTIONS:
 	   --config-sender	Identify yourself, value is used as AETitleCaller [--config-sender <string>]
-	   --config-machine 	Identify the IP address of the MagickBox you want to work with [--config-machine <string>]
-	   --config-port 	Identify the port number used by your MagickBox [--config-port <string>]
 	   --help, -h		show help
 	   --version, -v	print the version
-
+	
+	
 =======
 Setup
 =======
