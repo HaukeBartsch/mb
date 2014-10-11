@@ -3,7 +3,7 @@
 MagickBox command shell
 ************************
 
-The MagickBox command shell is used to query, send, receive, and remove jobs from a MagickBox processing machine. This command line tool provides a convenient way to interface with MagickBox instances for larger projects. If you have ever worked with programs like git the usage should be familiar. 
+The MagickBox command shell is used to query, send, receive (and remove) jobs from a MagickBox processing machine. This command line tool provides a convenient way to interface with MagickBox instances for larger projects. If you have ever worked with programs like git the usage should be familiar. 
 
 You can download the command shell executable (mb) for your platform here:
 
@@ -16,7 +16,7 @@ You can download the command shell executable (mb) for your platform here:
 * Windows (MD5 = 68b9e25fef9f351eca91be531e2f033d)
 	wget https://github.com/HaukeBartsch/MagickBox/raw/master/code/mb-shell/Windows/mb.exe
 
-This is the basic help page of the application (after calling ./mb)::
+This is the basic help page of the application (after calling ./mb):
 
 	NAME:
 	   mb - MagickBox command shell for query, send, retrieve, and deletion of data.
@@ -78,7 +78,7 @@ This is the basic help page of the application (after calling ./mb)::
 Setup
 =======
 
-Start by using the queryMachines command to identify your MagickBox. You need to set your active MagickBox machines for processing using 'activeMachines add <IP> <port>' once. All future calls to mb will use those machines. Also specify the 'sender' (your name or the name of your project for example) as it makes it easier later to identify your scans::
+Start by using the queryMachines command to identify your MagickBox. You need to set your active MagickBox machines for processing using 'activeMachines add &lt;IP&gt; &lt;port&gt;' once. All future calls to mb will use those machines. Also specify the 'sender' (your name or the name of your project for example) as it makes it easier later to identify your scans:
 
 	> mb queryMachines
 	[{ "id": "0", "machine": "137.110.172.9", "port": "2813" },
@@ -92,7 +92,7 @@ If you add more than one machine with the same processing capabilities to the li
 Usage
 ========
 
-The basic workflow is to first identify some data that is locally available on your harddrive. This could be a directory with T1-weighted images in DICOM format. Send the data to a processing bucket on your MagickBox. Here an example that sends data for gradient unwarp (distortion correction for MRI data)::
+The basic workflow is to first identify some data that is locally available on your harddrive. This could be a directory with T1-weighted images in DICOM format. Send the data to a processing bucket on your MagickBox. Here an example that sends data for gradient unwarp (distortion correction for MRI data):
 
 	> mb push ProcGradUnwarp ~/data/testdata/DICOMS
 
