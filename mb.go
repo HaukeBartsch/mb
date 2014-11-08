@@ -32,6 +32,7 @@ import (
        "mime/multipart"
        "log"
        "sort"
+       "strings"
        "github.com/codegangsta/cli"
 )
 
@@ -166,21 +167,21 @@ func getListOfJobs( reg string, ttype int) {
       defer resp.Body.Close()
       body, err := ioutil.ReadAll(resp.Body)
 
+      // This is not good, we are time limited here and this would download all which can take much longer
       var res = parseGet(body, reg, ttype, machine, port)
 
       for _,v := range res {
         v["Machine"] = machine
         v["Port"] = port
       }
-      //fmt.Println("put something into the channel")
       c <- res
     }(v.Machine, v.Port)
   }
   timeout := time.After(globalSettings.Timeout)
   if ttype == GET_LOG { // wait longer
     timeout = time.After(globalSettings.Timeout*20)
-  } else if ttype == GET_DOWNLOAD { // wait even longer (5hours)
-    timeout = time.After(time.Duration(5*60*1000) * time.Millisecond)
+  } else if ttype == GET_DOWNLOAD { // wait forever (scales with the number of studies we potentially download)
+    timeout = time.After(time.Duration(5*60*1000) * time.Second)
   }
 
   loop:
@@ -267,7 +268,12 @@ func parseGet(buf []byte, reg string, ttype int, machine string, port string) ( 
         }
         if foundOne {
           if ttype == GET_DOWNLOAD {
-            downloadFile(scratchdir, pid, machine, port)
+            filename := fmt.Sprintf("%s_%s.zip", pid, scratchdir)
+            if _, err := os.Stat(filename); err == nil {
+              fmt.Printf("file %s exists, skip download...\n", filename)
+            } else {
+              downloadFile(scratchdir, pid, machine, port)
+            }
           } else { // GET_VIEW and GET_LOG
             returned = append(returned, bb)
           }
@@ -278,6 +284,7 @@ func parseGet(buf []byte, reg string, ttype int, machine string, port string) ( 
 
 func downloadFile(scratchdir string, pid string, machine string, port string) {
 
+  fmt.Printf("request %s ", scratchdir)
   url := fmt.Sprintf("http://%v:%v/code/php/getOutputZip.php?folder=%s", machine, port, scratchdir)
   res, err := http.Get(url)
   if err != nil {
@@ -286,8 +293,12 @@ func downloadFile(scratchdir string, pid string, machine string, port string) {
   defer res.Body.Close()
 
   filename := fmt.Sprintf("%s_%s.zip", pid, scratchdir)
+  /*if _, err := os.Stat(filename); err == nil {
+    fmt.Printf("file %s exists skip...", filename)
+    return
+  }*/
   fp, _ := os.OpenFile(filename, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0777)
-  fmt.Println("writing", fp.Name())
+  // fmt.Println("\rwriting", fp.Name())
   defer fp.Close() // defer close
 
 
@@ -299,13 +310,14 @@ func downloadFile(scratchdir string, pid string, machine string, port string) {
       break
     }
     all = append(all, buf[:n]...)
-    fmt.Printf("receiving %3.2fmb\r", float64(len(all))/1024.0/1024.0)
+    fmt.Printf("\033[2K[%3.2fmb] %s\r", float64(len(all))/1024.0/1024.0, fp.Name())
   }
+  fmt.Printf("\nwrite to disk...")
   _, err = fp.Write(all[:len(all)])
   if err != nil {
     log.Println(err)
   }
-
+  fmt.Printf("\033[2K\r")
 }
 
 func newfileUploadRequest(uri string, params map[string]string, paramName, path string) (*http.Request, error) {
@@ -494,10 +506,42 @@ func sendJob( aetitle string, dir string, arguments string) {
       return err
      }
      count = count + 1
-     fmt.Printf("add file %v [%v]\r", path, count)
+     fmt.Printf("\033[2Kadd file %v [%v]\r", path, count)
+
      // we could check if file is DICOM first... (seek 128bytes and see if we find "DICM")
-     
-     fname := fmt.Sprintf("file%05d_%v", count, filepath.Base(path))
+     var filename = filepath.Base(path)
+     var extension = filepath.Ext(path)
+     var nameWithoutExtension = strings.TrimRight(filename, extension)
+     var fname = ""
+     if (extension != ".dcm") {
+        isDCM := false
+        // check if we have a DICOM file, add .dcm at the end
+        f,err := os.Open(path)
+        if err != nil {
+          fmt.Printf("Warning: could not open file to find out if its a DICOM file")
+        } else {
+          _, err = f.Seek(128,0)
+          if err != nil {
+             isDCM = false
+          } else {
+            content := make([]byte, 4)
+            n1, err := f.Read(content)
+            if (n1 == 4) && (err == nil) {
+              if string(content) == "DICM" {
+                isDCM = true
+              }
+            }
+          }
+          f.Close()
+        }
+        if isDCM {
+          fname = fmt.Sprintf("%v_file%05d.dcm", filename, count)
+        } else {
+          fname = fmt.Sprintf("%v_file%05d", filename, count)          
+        }
+     } else {
+       fname = fmt.Sprintf("%v_file%05d_%v", nameWithoutExtension, count, extension)
+     }
      f, err := w.Create(fname)
      if err != nil {
       fmt.Printf("Error: could not create file in zip", err)
@@ -613,7 +657,7 @@ func removeJobs( reg string ) {
       c <- rem
     }(v.Machine, v.Port)
   }
-  timeout := time.After(globalSettings.Timeout) // time.After(500 * time.Millisecond)
+  timeout := time.After(time.Second * 50000) // This can take a long long time
   loop:
   for i := 0; i < len(ms); i++ {
     select {
@@ -948,7 +992,7 @@ func main() {
                  "     > mb push data_02/\n" +
                  "     > mb list hauke:testproject\n" +
                  "     > mb pull hauke:testproject\n"
-     app.Version = "0.0.2"
+     app.Version = "0.0.4"
      app.Author = "Hauke Bartsch"
      app.Email = "HaukeBartsch@gmail.com"
      app.Flags = []cli.Flag {
