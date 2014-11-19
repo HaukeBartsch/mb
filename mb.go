@@ -736,9 +736,9 @@ func removeFile(scratchdir string, pid string, machine string, port string) {
   resp, err := client.Get(url)
   if err != nil {
     println("Error: could not reach machine ", machine, ":", port, "to delete", scratchdir)
+  } else {
+    defer resp.Body.Close()
   }
-
-  defer resp.Body.Close()
 }
 
 func saveActiveMagickBoxes( ms []Machine ) {
