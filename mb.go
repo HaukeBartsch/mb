@@ -496,6 +496,7 @@ func sendJob( aetitle string, dir string, arguments string) {
   w:= zip.NewWriter(buf)
 
   count := 0
+  jobname := filepath.Base(dir)
   err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
      // we should check if we have a DICOM file... (or not)
      if err != nil {
@@ -591,6 +592,7 @@ func sendJob( aetitle string, dir string, arguments string) {
       "description": "Send by MagickBox",
       "filename": filepath.Base(zipFilename),
       "sender": sender,
+      "jobname": jobname,  // the name of the directory that was send
       "arguments": arguments,
   }
   url := fmt.Sprintf("http://%v:%v/code/php/processZip.php", machine, port)
