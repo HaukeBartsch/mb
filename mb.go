@@ -1044,7 +1044,7 @@ func main() {
                  "     > mb push Proc data_02/\n" +
                  "     > mb list hauke:testproject\n" +
                  "     > mb pull hauke:testproject\n"
-     app.Version = "0.0.4"
+     app.Version = "0.0.5"
      app.Author = "Hauke Bartsch"
      app.Email = "HaukeBartsch@gmail.com"
      app.Flags = []cli.Flag {
