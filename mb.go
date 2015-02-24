@@ -40,6 +40,7 @@ const (
         GET_VIEW int = iota  
         GET_DOWNLOAD int = iota
         GET_LOG int = iota
+        GET_DOWNLOAD_INPUT int = iota
 )
 
 type Machine struct {
@@ -180,9 +181,9 @@ func getListOfJobs( reg string, ttype int) {
   timeout := time.After(globalSettings.Timeout)
   if ttype == GET_LOG { // wait longer
     timeout = time.After(globalSettings.Timeout*20)
-  } else if ttype == GET_DOWNLOAD { // wait forever (scales with the number of studies we potentially download)
+  } else if ttype == GET_DOWNLOAD || ttype == GET_DOWNLOAD_INPUT { // wait forever (scales with the number of studies we potentially download)
     timeout = time.After(time.Duration(5*60*1000) * time.Second)
-  }
+  } 
 
   loop:
   for i := 0; i < len(all_ms); i++ {
@@ -274,6 +275,13 @@ func parseGet(buf []byte, reg string, ttype int, machine string, port string) ( 
             } else {
               downloadFile(scratchdir, pid, machine, port)
             }
+          } else if ttype == GET_DOWNLOAD_INPUT {
+            filename := fmt.Sprintf("%s_%s_input.zip", pid, scratchdir)
+            if _, err := os.Stat(filename); err == nil {
+              fmt.Printf("file %s exists, skip download...\n", filename)
+            } else {
+              downloadInputFile(scratchdir, pid, machine, port)
+            }
           } else { // GET_VIEW and GET_LOG
             returned = append(returned, bb)
           }
@@ -293,6 +301,45 @@ func downloadFile(scratchdir string, pid string, machine string, port string) {
   defer res.Body.Close()
 
   filename := fmt.Sprintf("%s_%s.zip", pid, scratchdir)
+  /*if _, err := os.Stat(filename); err == nil {
+    fmt.Printf("file %s exists skip...", filename)
+    return
+  }*/
+  fp, _ := os.OpenFile(filename, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0777)
+  // fmt.Println("\rwriting", fp.Name())
+  defer fp.Close() // defer close
+
+
+  buf := make([]byte, 131072)
+  var all []byte
+  for {
+    n, _ := res.Body.Read(buf)
+    if n == 0 {
+      break
+    }
+    all = append(all, buf[:n]...)
+    fmt.Printf("\033[2K[%3.2fmb] %s\r", float64(len(all))/1024.0/1024.0, fp.Name())
+  }
+  fmt.Printf("\nwrite to disk...")
+  _, err = fp.Write(all[:len(all)])
+  if err != nil {
+    log.Println(err)
+  }
+  fmt.Printf("\033[2K\r")
+}
+
+
+func downloadInputFile(scratchdir string, pid string, machine string, port string) {
+
+  fmt.Printf("request %s ", scratchdir)
+  url := fmt.Sprintf("http://%v:%v/code/php/getOutputZip.php?folder=%s&type=input", machine, port, scratchdir)
+  res, err := http.Get(url)
+  if err != nil {
+    log.Fatal(err)
+  }
+  defer res.Body.Close()
+
+  filename := fmt.Sprintf("%s_%s_input.zip", pid, scratchdir)
   /*if _, err := os.Stat(filename); err == nil {
     fmt.Printf("file %s exists skip...", filename)
     return
@@ -538,7 +585,8 @@ func sendJob( aetitle string, dir string, arguments string) {
         if isDCM {
           fname = fmt.Sprintf("%v_file%05d.dcm", filename, count)
         } else {
-          fname = fmt.Sprintf("%v_file%05d", filename, count)          
+	  // adding the filename to the end keeps the file extension intact
+          fname = fmt.Sprintf("file%05d_%v", count, filename)          
         }
      } else {
        fname = fmt.Sprintf("%v_file%05d_%v", nameWithoutExtension, count, extension)
@@ -733,8 +781,10 @@ func removeFile(scratchdir string, pid string, machine string, port string) {
 
   url := fmt.Sprintf("http://%v:%v/code/php/deleteStudy.php?scratchdir=%s", machine, port, scratchdir)
 
+  // for linux replace the next two lines with:  client := http.Client{}
   timeout := globalSettings.Timeout // time.Duration(5 * time.Second)
   client := http.Client{ Timeout: timeout }
+
   resp, err := client.Get(url)
   if err != nil {
     println("Error: could not reach machine ", machine, ":", port, "to delete", scratchdir)
@@ -990,8 +1040,8 @@ func main() {
                  "   used for that session.\n\n" +
                  "   Example:\n" +
                  "     > mb setSender \"hauke:testproject\"\n" +
-                 "     > mb push data_01/\n" +
-                 "     > mb push data_02/\n" +
+                 "     > mb push Proc data_01/\n" +
+                 "     > mb push Proc data_02/\n" +
                  "     > mb list hauke:testproject\n" +
                  "     > mb pull hauke:testproject\n"
      app.Version = "0.0.4"
@@ -1024,8 +1074,8 @@ func main() {
      {
         Name:      "pull",
         ShortName: "g",
-        Usage:     "Retrieve matching jobs [pull <regular expression>]",
-        Description: "Download matching jobs as a zip file into the current directory.\n\n" +
+        Usage:     "Retrieve matching jobs output [pull <regular expression>]",
+        Description: "Download matching jobs output as a zip file into the current directory.\n\n" +
                      "   If matching jobs are on more than one machine one download session per\n" +
                      "   machine will be used to retrieve the results.\n\n" +
                      "   Supply a regular expression to specify which session data to download.\n" +
@@ -1036,7 +1086,26 @@ func main() {
           if len(c.Args()) < 1 {
             fmt.Printf("Error: indiscriminate downloads are not supported, supply a regular expression that is matched against all fields\n")
           } else {
-            getListOfJobs( c.Args().First(), GET_DOWNLOAD)
+            getListOfJobs( c.Args().First(), GET_DOWNLOAD) // only deliver output
+          }
+        },
+     },
+     {
+        Name:      "pull-input",
+        ShortName: "pi",
+        Usage:     "Retrieve matching jobs input [pull-input <regular expression>]",
+        Description: "Download matching jobs input data as a zip file into the current directory.\n\n" +
+                     "   If matching jobs are on more than one machine one download session per\n" +
+                     "   machine will be used to retrieve the results.\n\n" +
+                     "   Supply a regular expression to specify which session data to download.\n" +
+                     "   Example:\n" +
+                     "   > mb pull-input ip44\n" +
+                     "   Downloads all sessions send from ip44.\n",
+        Action: func(c *cli.Context) {
+          if len(c.Args()) < 1 {
+            fmt.Printf("Error: indiscriminate downloads are not supported, supply a regular expression that is matched against all fields\n")
+          } else {
+            getListOfJobs( c.Args().First(), GET_DOWNLOAD_INPUT)
           }
         },
      },
