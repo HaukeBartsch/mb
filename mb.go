@@ -554,6 +554,7 @@ func sendJob( aetitle string, dir string, arguments string) {
       return err
      }
      if (info.Mode() == os.ModeSymlink) {
+       fmt.Printf("\nError: symbolic link found in path, Walk will not traverse a symbolic link, files might not be send\n")
        return err
      }
      count = count + 1
@@ -600,12 +601,12 @@ func sendJob( aetitle string, dir string, arguments string) {
      }
      data, readerr := ioutil.ReadFile(path)
      if readerr != nil {
-      fmt.Printf("Error: could not read content of %s", path)
+      fmt.Printf("Error: could not read content of %s\n", path)
      }
 
      _, err = f.Write([]byte(data))
      if err != nil {
-       fmt.Printf("Error: could not write file to zip")
+       fmt.Printf("Error: could not write file to zip\n")
      }
 
      return err
