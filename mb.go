@@ -553,6 +553,9 @@ func sendJob( aetitle string, dir string, arguments string) {
      if info.IsDir() {
       return err
      }
+     if (info.Mode() == os.ModeSymlink) {
+       return err
+     }
      count = count + 1
      fmt.Printf("\033[2Kadd file %v [%v]\r", path, count)
 
@@ -597,7 +600,7 @@ func sendJob( aetitle string, dir string, arguments string) {
      }
      data, readerr := ioutil.ReadFile(path)
      if readerr != nil {
-      fmt.Printf("Error: could not read content of", path)
+      fmt.Printf("Error: could not read content of %s", path)
      }
 
      _, err = f.Write([]byte(data))
